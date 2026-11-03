@@ -94,3 +94,33 @@ def test_sequential_units_require_settlement_market():
         ValueError, match=r"Sequential unit '\w+'.*imbalance_settlement"
     ):
         world._validate_setup()
+
+
+def test_empty_unit_types_uses_defaults():
+    world = World()
+    world.scenario_data = load_config_and_create_forecaster(
+        "examples/inputs", "example_01c", "eom_only"
+    )
+    world.scenario_data["config"]["unit_types"] = None  # empty YAML key
+    setup_world(world=world)
+    assert any(isinstance(u, PowerPlant) for u in world.units.values())
+
+
+def test_storage_without_price_da_forecast_warns(caplog):
+    world = World()
+    world.scenario_data = load_config_and_create_forecaster(
+        "examples/inputs", "example_gb_01", "base"
+    )
+    world.scenario_data["forecasts_df"] = world.scenario_data["forecasts_df"].drop(
+        columns="price_DA"
+    )
+    with caplog.at_level("WARNING", logger="assume.scenario.loader_csv"):
+        setup_world(world=world)
+    assert "price_DA" in caplog.text
+    assert "battery" in caplog.text
+
+
+def test_storage_with_price_da_forecast_does_not_warn(caplog):
+    with caplog.at_level("WARNING", logger="assume.scenario.loader_csv"):
+        _gb_world(lambda config: None)
+    assert "price_DA" not in caplog.text

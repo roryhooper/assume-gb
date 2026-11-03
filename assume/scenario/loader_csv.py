@@ -41,6 +41,7 @@ from assume.common.utils import (
     set_random_seed,
 )
 from assume.strategies import BaseStrategy
+from assume.strategies.sequential_strategies import StorageSequentialHeuristicStrategy
 from assume.world import World
 
 logger = logging.getLogger(__name__)
@@ -943,6 +944,38 @@ def load_config_and_create_forecaster(
     }
 
 
+def warn_missing_storage_price_forecast(
+    world: World, forecasts_df: pd.DataFrame | None
+) -> None:
+    """
+    Warn if a sequential storage strategy has no ``price_DA`` forecast column.
+
+    Without it the DA price forecast falls back to ASSUME's naive forecast,
+    which is built from the actual availability and demand and therefore
+    leaks perfect foresight into the battery's DA bids.
+    """
+    column = f"price_{StorageSequentialHeuristicStrategy.DA_MARKET}"
+    if forecasts_df is not None and column in forecasts_df.columns:
+        return
+    units = [
+        unit.id
+        for unit in world.units.values()
+        if any(
+            isinstance(strategy, StorageSequentialHeuristicStrategy)
+            for strategy in unit.bidding_strategies.values()
+        )
+    ]
+    if units:
+        logger.warning(
+            "Units %s use storage_sequential_heuristic but no '%s' column was "
+            "supplied in forecasts_df.csv. The DA price forecast falls back to "
+            "the naive forecast built from actual availability and demand, "
+            "giving the battery perfect foresight in DA.",
+            units,
+            column,
+        )
+
+
 def setup_world(
     world: World,
     evaluation_mode: bool = False,
@@ -1087,9 +1120,11 @@ def setup_world(
     logger.info("Read units from dataframe")
 
     units = defaultdict(list)
+    # optional mapping of default unit types to other registered types
+    unit_types = config.get("unit_types") or {}
     powerplant_units = read_units(
         units_df=powerplant_units,
-        unit_type=config.get("unit_types", {}).get("power_plant", "power_plant"),
+        unit_type=unit_types.get("power_plant", "power_plant"),
         forecaster=unit_forecasts,
         world_bidding_strategies=world.bidding_strategies,
         learning_mode=learning_mode,
@@ -1097,7 +1132,7 @@ def setup_world(
 
     storage_units = read_units(
         units_df=storage_units,
-        unit_type=config.get("unit_types", {}).get("storage", "storage"),
+        unit_type=unit_types.get("storage", "storage"),
         forecaster=unit_forecasts,
         world_bidding_strategies=world.bidding_strategies,
         learning_mode=learning_mode,
@@ -1105,7 +1140,7 @@ def setup_world(
 
     demand_units = read_units(
         units_df=demand_units,
-        unit_type=config.get("unit_types", {}).get("demand", "demand"),
+        unit_type=unit_types.get("demand", "demand"),
         forecaster=unit_forecasts,
         world_bidding_strategies=world.bidding_strategies,
         learning_mode=learning_mode,
@@ -1194,6 +1229,9 @@ def setup_world(
     # supersede algorithmic forecast calculation.
     use_forecasts_df = config.get("use_forecasts_df", True)
     world.init_forecasts(forecasts_df if use_forecasts_df else None)
+    warn_missing_storage_price_forecast(
+        world, forecasts_df if use_forecasts_df else None
+    )
 
     if config.get("save_forecasts", False):
         forecast_save_file = Path(scenario_data["path"]) / config.get(
