@@ -110,6 +110,16 @@ class BalancingPayAsClearRole(MarketRole):
                 else:
                     price = 0
 
+            if unmet > TOLERANCE:
+                logger.warning(
+                    "%s: product starting %s has NIV %.2f, unmet volume %.2f "
+                    "settled at the price limit",
+                    self.marketconfig.market_id,
+                    product[0],
+                    niv,
+                    unmet,
+                )
+
             price = float(price)
             accepted_product = accepted_incs + accepted_decs
             for order in accepted_product:

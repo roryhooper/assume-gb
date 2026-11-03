@@ -160,3 +160,29 @@ def test_balancing_validate_keeps_notification():
     role.validate_orderbook(orders, ("addr", "agent"))
     assert len(orders) == 1
     assert orders[0]["fpn"] == -30
+
+
+def test_balancing_unmet_is_logged(caplog):
+    orders = [
+        bal_order("vre", 0, 0, 80, 100),
+        bal_order("gas", 5, 90, 0, 0),
+    ]
+    with caplog.at_level(
+        "WARNING", logger="assume.markets.clearing_algorithms.balancing"
+    ):
+        clear(orders)
+    assert "BAL" in caplog.text
+    assert "unmet" in caplog.text
+    assert "15" in caplog.text
+
+
+def test_balancing_met_is_not_logged(caplog):
+    orders = [
+        bal_order("vre", 0, 0, 80, 100),
+        bal_order("gas", 50, 90, 0, 0),
+    ]
+    with caplog.at_level(
+        "WARNING", logger="assume.markets.clearing_algorithms.balancing"
+    ):
+        clear(orders)
+    assert "unmet" not in caplog.text
