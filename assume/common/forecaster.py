@@ -179,6 +179,7 @@ class UnitForecaster:
         availability: ForecastSeries = 1,
         forecast_algorithms: dict[str, str] = {},
         forecast_registries: dict[str, dict] = None,
+        availability_vintages: dict[str, ForecastSeries] | None = None,
     ):
         if not isinstance(index, FastIndex):
             index = FastIndex(start=index[0], end=index[-1], freq=pd.infer_freq(index))
@@ -189,6 +190,15 @@ class UnitForecaster:
             raise ValidationError(
                 message="Availability must be between 0 and 1", field="availability"
             )
+        self.availability_vintages: dict[str, FastSeries] = {}
+        for vintage, series in (availability_vintages or {}).items():
+            vintage_series = self._to_series(series)
+            if any(vintage_series < 0) or any(vintage_series > 1):
+                raise ValidationError(
+                    message=f"Availability vintage '{vintage}' must be between 0 and 1",
+                    field="availability_vintages",
+                )
+            self.availability_vintages[vintage] = vintage_series
         self.forecast_algorithms = forecast_algorithms
         self._registries = forecast_registries
         if market_prices is None:
@@ -200,6 +210,13 @@ class UnitForecaster:
             residual_load
         )
         self.preprocess_information = {}
+
+    def get_availability(self, vintage: str = "actual") -> FastSeries:
+        """Return the availability forecast of the given vintage.
+
+        ``"actual"`` and any vintage that was not supplied return ``self.availability``.
+        """
+        return self.availability_vintages.get(vintage, self.availability)
 
     def _to_series(self, item: ForecastSeries) -> FastSeries:
         """Wrap *item* in a ``FastSeries`` aligned to ``self.index`` (no-op if already one)."""
@@ -406,6 +423,7 @@ class DemandForecaster(UnitForecaster):
         availability: ForecastSeries = 1,
         forecast_algorithms: dict[str, str] = {},
         forecast_registries: dict[str, dict] = None,
+        demand_vintages: dict[str, ForecastSeries] | None = None,
     ):
         super().__init__(
             index=index,
@@ -418,6 +436,22 @@ class DemandForecaster(UnitForecaster):
         self.demand = self._to_series(demand)
         if any(self.demand > 0):
             raise ValidationError(message="demand must be negative", field="demand")
+        self.demand_vintages: dict[str, FastSeries] = {}
+        for vintage, series in (demand_vintages or {}).items():
+            vintage_series = self._to_series(series)
+            if any(vintage_series > 0):
+                raise ValidationError(
+                    message=f"demand vintage '{vintage}' must be negative",
+                    field="demand_vintages",
+                )
+            self.demand_vintages[vintage] = vintage_series
+
+    def get_demand(self, vintage: str = "actual") -> FastSeries:
+        """Return the demand forecast of the given vintage.
+
+        ``"actual"`` and any vintage that was not supplied return ``self.demand``.
+        """
+        return self.demand_vintages.get(vintage, self.demand)
 
 
 class PowerplantForecaster(UnitForecaster):
@@ -439,6 +473,7 @@ class PowerplantForecaster(UnitForecaster):
         availability: ForecastSeries = 1,
         forecast_algorithms: dict[str, str] = {},
         forecast_registries: dict[str, dict] = None,
+        availability_vintages: dict[str, ForecastSeries] | None = None,
     ):
         super().__init__(
             index=index,
@@ -447,6 +482,7 @@ class PowerplantForecaster(UnitForecaster):
             forecast_registries=forecast_registries,
             market_prices=market_prices,
             residual_load=residual_load,
+            availability_vintages=availability_vintages,
         )
         if fuel_prices is None:
             fuel_prices = {}
