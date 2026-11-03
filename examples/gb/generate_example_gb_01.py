@@ -95,7 +95,7 @@ base:
       maximum_bid_volume: 100000
       maximum_bid_price: 3000
       minimum_bid_price: -500
-      price_unit: EUR/MWh
+      price_unit: GBP/MWh
       market_mechanism: pay_as_clear
       param_dict:
         forecast_vintage: da
@@ -114,7 +114,7 @@ base:
       maximum_bid_volume: 100000
       maximum_bid_price: 3000
       minimum_bid_price: -500
-      price_unit: EUR/MWh
+      price_unit: GBP/MWh
       market_mechanism: pay_as_clear
       param_dict:
         forecast_vintage: id
@@ -133,7 +133,7 @@ base:
       maximum_bid_volume: 100000
       maximum_bid_price: 3000
       minimum_bid_price: -500
-      price_unit: EUR/MWh
+      price_unit: GBP/MWh
       market_mechanism: balancing_pay_as_clear
       additional_fields:
         - fpn
