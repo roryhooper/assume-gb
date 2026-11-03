@@ -125,6 +125,8 @@ def test_settle_profit_sums_components(plant):
     o = plant.outputs
     assert o["imbalance"].at[T] == -20
     assert o["generation_costs"].at[T] > 0
+    # base-unit/dashboard name carries the same costs, subtracted only once
+    assert o["energy_generation_costs"].at[T] == o["generation_costs"].at[T]
     expected = (
         4000
         + o["balancing_energy_cashflow"].at[T]

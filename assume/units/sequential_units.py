@@ -86,6 +86,8 @@ class SequentialUnitMixin:
         out["imbalance"].at[t] = imbalance
         out["imbalance_cashflow"].at[t] = imbalance * price
         out["generation_costs"].at[t] = costs
+        # same costs under the base unit / dashboard name, not summed twice
+        out["energy_generation_costs"].at[t] = costs
 
         revenue = sum(
             series.at[t] for key, series in out.items() if key.endswith("_cashflow")
