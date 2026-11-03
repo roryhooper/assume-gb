@@ -107,6 +107,8 @@ available_examples = {
     },
     # redispatch example
     "redisp_3_nodes": {"scenario": "example_04a", "study_case": "base"},
+    # GB-style sequential markets: DA -> ID -> hourly BAL -> imbalance settlement
+    "gb_sequential": {"scenario": "example_gb_01", "study_case": "base"},
 }
 
 

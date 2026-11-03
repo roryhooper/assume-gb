@@ -1,0 +1,2 @@
+name,technology,bidding_DA,bidding_ID,bidding_BAL,max_power_charge,max_power_discharge,efficiency_charge,efficiency_discharge,min_soc,max_soc,initial_soc,capacity,additional_cost_charge,additional_cost_discharge,unit_operator
+battery,battery,storage_sequential_heuristic,storage_sequential_heuristic,storage_sequential_heuristic,100.0,100.0,0.9,0.9,0.0,1.0,0.5,200.0,0.0,0.0,op_battery
