@@ -162,3 +162,93 @@ async def test_settlement_market_writes_dispatch(units_operator: UnitsOperator):
     )
     for key in ("profit", "imbalance", "physical", "fpn", "position"):
         assert key in unit_dispatch[0]
+
+
+def _spy_operator(markets):
+    role = UnitsOperator(available_markets=[])
+    role.id = "op"
+    role.registered_markets = {m.market_id: m for m in markets}
+    calls = []
+    role.set_unit_dispatch = lambda *a, **kw: calls.append("set")
+    role.write_actual_dispatch = lambda *a, **kw: calls.append(("write", a, kw))
+    role.calculate_unit_cashflow_and_reward = lambda *a, **kw: calls.append("cashflow")
+    role.settle_imbalance = lambda *a, **kw: calls.append("settle")
+    role.write_settled_unit_dispatch = lambda *a, **kw: calls.append("write_units")
+    return role, calls
+
+
+def _empty_feedback(market_id):
+    return {
+        "context": "clearing",
+        "market_id": market_id,
+        "accepted_orders": [],
+        "rejected_orders": [],
+    }
+
+
+def test_non_sequential_feedback_keeps_original_order():
+    """Without an imbalance settlement market, dispatch is written before cashflow."""
+    role, calls = _spy_operator([make_market("DA", "energy")])
+    role.handle_market_feedback(_empty_feedback("DA"), {})
+    assert calls == ["set", ("write", ("energy",), {}), "cashflow"]
+
+
+def test_sequential_feedback_settles_before_writing():
+    bal = make_market("BAL", "balancing_energy", {"imbalance_settlement": True})
+    da = make_market("DA", "energy")
+    role, calls = _spy_operator([bal, da])
+    feedback = _empty_feedback("BAL")
+    feedback["rejected_orders"] = [notification("BAL")]
+    role.handle_market_feedback(feedback, {})
+    assert calls[:3] == ["set", "cashflow", "settle"]
+    assert calls[3][0] == "write"
+    assert calls[3][2] == {"include_units": False}
+    assert calls[4] == "write_units"
+
+    calls.clear()
+    role.handle_market_feedback(_empty_feedback("DA"), {})
+    assert calls == [
+        "set",
+        "cashflow",
+        ("write", ("energy",), {"include_units": False}),
+    ]
+
+
+async def test_settlement_exports_unit_rows_up_to_settled_product(
+    units_operator: UnitsOperator,
+):
+    """Unit rows are exported up to and including the just-settled hour, once each."""
+    sent = []
+    units_operator.context.data["output_agent_addr"] = "out"
+    units_operator.context.schedule_instant_message = lambda **kw: sent.append(
+        kw["content"]
+    )
+    clock = units_operator.context.context.clock
+    unit_times = []
+    for hour in (1, 2):
+        product_start = start + hour * H
+        clock.set_time(datetime2timestamp(product_start - H))  # gate at H-60
+        order = notification("BAL")
+        order["start_time"] = product_start
+        order["end_time"] = product_start + H
+        sent.clear()
+        units_operator.handle_market_feedback(
+            {
+                "context": "clearing",
+                "market_id": "BAL",
+                "accepted_orders": [],
+                "rejected_orders": [order],
+            },
+            {},
+        )
+        types = [m["type"] for m in sent]
+        assert "market_dispatch" in types
+        unit_rows = [m for m in sent if m["type"] == "unit_dispatch"]
+        assert len(unit_rows) == 1
+        data = unit_rows[0]["data"][0]
+        assert data["time"][-1] == product_start
+        assert data["power"][-1] == -110
+        unit_times.extend(data["time"])
+
+    assert len(unit_times) == len(set(unit_times))
+    assert unit_times[-2:] == [start + H, start + 2 * H]

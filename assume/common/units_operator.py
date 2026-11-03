@@ -4,7 +4,7 @@
 
 import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import groupby
 from operator import itemgetter
 
@@ -68,6 +68,8 @@ class UnitsOperator(Role):
         self.available_markets = available_markets
         self.registered_markets: dict[str, MarketConfig] = {}
         self.last_sent_dispatch = defaultdict(lambda: 0)
+        # sequential mode: last time step whose unit dispatch was exported
+        self.last_unit_export: datetime | None = None
         self.forecaster = forecaster
 
         self.portfolio_strategies = portfolio_strategies
@@ -242,24 +244,30 @@ class UnitsOperator(Role):
         self.valid_orders[marketconfig.product_type].extend(orderbook)
         self.set_unit_dispatch(orderbook, marketconfig)
 
-        # now once we have the market results and the dispatch has been set
-        # we can calculate the cashflow and reward for the units
-        self.calculate_unit_cashflow_and_reward(orderbook, marketconfig)
-
-        is_settlement = bool(marketconfig.param_dict.get("imbalance_settlement"))
-        if is_settlement:
-            self.settle_imbalance(orderbook, marketconfig)
-
-        # in sequential mode only the settlement market exports unit dispatch,
-        # as physical output is only known after settlement
         sequential_mode = any(
             m.param_dict.get("imbalance_settlement")
             for m in self.registered_markets.values()
         )
-        self.write_actual_dispatch(
-            marketconfig.product_type,
-            include_units=is_settlement or not sequential_mode,
-        )
+        if not sequential_mode:
+            self.write_actual_dispatch(marketconfig.product_type)
+
+            # now once we have the market results and the dispatch has been set
+            # we can calculate the cashflow and reward for the units
+            self.calculate_unit_cashflow_and_reward(orderbook, marketconfig)
+            return
+
+        # sequential mode: the position is booked first, physical output is
+        # only known after settlement, so only the settlement market exports
+        # unit dispatch, up to and including the hours just settled
+        self.calculate_unit_cashflow_and_reward(orderbook, marketconfig)
+        is_settlement = bool(marketconfig.param_dict.get("imbalance_settlement"))
+        if is_settlement:
+            self.settle_imbalance(orderbook, marketconfig)
+        self.write_actual_dispatch(marketconfig.product_type, include_units=False)
+        if is_settlement and orderbook:
+            self.write_settled_unit_dispatch(
+                max(order["start_time"] for order in orderbook)
+            )
 
     def settle_imbalance(
         self, orderbook: Orderbook, marketconfig: MarketConfig
@@ -418,12 +426,27 @@ class UnitsOperator(Role):
             groupby=["market_id", "unit_id"],
         )
 
+        unit_dispatch = self.get_unit_dispatch(start, now) if include_units else []
+
+        return market_dispatch, unit_dispatch
+
+    def get_unit_dispatch(self, start: datetime, end: datetime) -> list[dict]:
+        """
+        Commits the dispatch of all units between ``start`` and ``end`` (inclusive)
+        and collects their outputs.
+
+        Args:
+            start (datetime.datetime): The first time step to export.
+            end (datetime.datetime): The last time step to export.
+
+        Returns:
+            list[dict]: The unit_dispatch entries, one per unit.
+        """
         unit_dispatch = []
-        for unit_id, unit in self.units.items() if include_units else ():
-            current_dispatch = unit.execute_current_dispatch(start, now)
-            end = now
+        for unit_id, unit in self.units.items():
+            current_dispatch = unit.execute_current_dispatch(start, end)
             dispatch = {"power": current_dispatch}
-            unit.calculate_generation_cost(start, now, "energy")
+            unit.calculate_generation_cost(start, end, "energy")
             valid_outputs = [
                 "soc",
                 "cashflow",
@@ -445,7 +468,7 @@ class UnitsOperator(Role):
             dispatch["unit"] = unit_id
             unit_dispatch.append(dispatch)
 
-        return market_dispatch, unit_dispatch
+        return unit_dispatch
 
     def write_actual_dispatch(
         self, product_type: str, include_units: bool = True
@@ -495,6 +518,35 @@ class UnitsOperator(Role):
                         "data": unit_dispatch,
                     },
                 )
+
+    def write_settled_unit_dispatch(self, until: datetime) -> None:
+        """
+        Sends the unit dispatch up to and including ``until`` to the output agent.
+
+        Used in sequential mode, where physical output is only known once a
+        product has been settled. Each time step is exported exactly once.
+
+        Args:
+            until (datetime.datetime): The start of the latest settled product.
+        """
+        last = self.last_unit_export
+        if last is not None and until <= last:
+            return
+        self.last_unit_export = until
+        # add one second to exclude the last exported time step
+        start = timestamp2datetime(1) if last is None else last + timedelta(seconds=1)
+        unit_dispatch = self.get_unit_dispatch(start, until)
+
+        db_addr = self.context.data.get("output_agent_addr")
+        if db_addr and unit_dispatch:
+            self.context.schedule_instant_message(
+                receiver_addr=db_addr,
+                content={
+                    "context": "write_results",
+                    "type": "unit_dispatch",
+                    "data": unit_dispatch,
+                },
+            )
 
     async def submit_bids(self, opening: OpeningMessage, meta: MetaDict) -> None:
         """

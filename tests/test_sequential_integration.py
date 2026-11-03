@@ -76,9 +76,9 @@ def test_gb_example_run_invariants(tmp_path):
         .groupby("time")[["physical", "imbalance"]]
         .sum()
     )
-    # ASSUME has no end-of-run dispatch flush, so the last 1-2 hours may be missing from unit_dispatch
     hours = ok.index.intersection(sums.index)
-    assert len(hours) >= 165
+    assert len(hours) == 168
+    assert len(disp) == len(disp.drop_duplicates(["time", "unit"]))
     full = hours[ok.loc[hours, "unmet_volume"].abs() < 1e-6]
     assert sums.loc[full, "physical"].abs().max() < 1e-6  # Σ physical = 0
     assert (
