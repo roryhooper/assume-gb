@@ -687,6 +687,42 @@ def load_config_and_create_forecaster(
     if availability is None:
         availability = pd.DataFrame(index=index)
 
+    # optional forecast vintages (e.g. day-ahead / intraday) of availability and demand
+    availability_vintage_dfs: dict[str, pd.DataFrame] = {}
+    demand_vintage_dfs: dict[str, pd.DataFrame] = {}
+    for vintage in ["da", "id"]:
+        vintage_availability = load_file(
+            path=path,
+            config=config,
+            file_name=f"availability_{vintage}_df",
+            index=index,
+        )
+        if vintage_availability is not None:
+            if vintage_availability.max().max() > 1:
+                vintage_availability = normalize_availability(
+                    powerplant_units, vintage_availability
+                )
+            availability_vintage_dfs[vintage] = vintage_availability
+        vintage_demand = load_file(
+            path=path, config=config, file_name=f"demand_{vintage}_df", index=index
+        )
+        if vintage_demand is not None:
+            demand_vintage_dfs[vintage] = vintage_demand
+
+    def get_availability_vintages(unit_id: str) -> dict[str, pd.Series]:
+        return {
+            vintage: df[unit_id]
+            for vintage, df in availability_vintage_dfs.items()
+            if unit_id in df.columns
+        }
+
+    def get_demand_vintages(unit_id: str) -> dict[str, pd.Series]:
+        return {
+            vintage: -df[unit_id].abs()
+            for vintage, df in demand_vintage_dfs.items()
+            if unit_id in df.columns
+        }
+
     fuel_prices_df = load_file(
         path=path, config=config, file_name="fuel_prices_df", index=index
     )
@@ -714,6 +750,7 @@ def load_config_and_create_forecaster(
             unit_forecasts[id] = PowerplantForecaster(
                 index=shared_unit_index,
                 availability=availability.get(id, pd.Series(1.0, index, name=id)),
+                availability_vintages=get_availability_vintages(id),
                 fuel_prices=fuel_prices,
                 forecast_algorithms=get_unit_forecast_algorithms(
                     forecast_algorithms, plant
@@ -725,6 +762,7 @@ def load_config_and_create_forecaster(
                 index=shared_unit_index,
                 availability=availability.get(id, pd.Series(1.0, index, name=id)),
                 demand=-demand_df[id].abs(),
+                demand_vintages=get_demand_vintages(id),
                 forecast_algorithms=get_unit_forecast_algorithms(
                     forecast_algorithms, demand
                 ),
@@ -734,6 +772,7 @@ def load_config_and_create_forecaster(
             unit_forecasts[id] = UnitForecaster(
                 index=shared_unit_index,
                 availability=availability.get(id, pd.Series(1.0, index, name=id)),
+                availability_vintages=get_availability_vintages(id),
                 forecast_algorithms=get_unit_forecast_algorithms(
                     forecast_algorithms, storage
                 ),
@@ -1050,7 +1089,7 @@ def setup_world(
     units = defaultdict(list)
     powerplant_units = read_units(
         units_df=powerplant_units,
-        unit_type="power_plant",
+        unit_type=config.get("unit_types", {}).get("power_plant", "power_plant"),
         forecaster=unit_forecasts,
         world_bidding_strategies=world.bidding_strategies,
         learning_mode=learning_mode,
@@ -1058,7 +1097,7 @@ def setup_world(
 
     storage_units = read_units(
         units_df=storage_units,
-        unit_type="storage",
+        unit_type=config.get("unit_types", {}).get("storage", "storage"),
         forecaster=unit_forecasts,
         world_bidding_strategies=world.bidding_strategies,
         learning_mode=learning_mode,
@@ -1066,7 +1105,7 @@ def setup_world(
 
     demand_units = read_units(
         units_df=demand_units,
-        unit_type="demand",
+        unit_type=config.get("unit_types", {}).get("demand", "demand"),
         forecaster=unit_forecasts,
         world_bidding_strategies=world.bidding_strategies,
         learning_mode=learning_mode,

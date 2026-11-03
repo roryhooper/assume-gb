@@ -754,16 +754,16 @@ class World:
         # Existence of demand implies existence of generation and vice versa.
         demand_exists, generation_exists = False, False
 
-        demand_types = [self.unit_types[x] for x in ["demand"]]
-        generation_types = [
+        demand_types = tuple(self.unit_types[x] for x in ["demand"])
+        generation_types = tuple(
             self.unit_types[x] for x in ["power_plant", "hydrogen_plant"]
-        ]
+        )
 
         for operator in unit_operators:
             for unit in operator.units.values():
-                if type(unit) in demand_types:
+                if isinstance(unit, demand_types):
                     demand_exists = True
-                elif type(unit) in generation_types:
+                elif isinstance(unit, generation_types):
                     generation_exists = True
 
         if demand_exists and not generation_exists:
