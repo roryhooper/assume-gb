@@ -47,6 +47,7 @@ from assume.strategies import (
     deprecated_bidding_strategies,
 )
 from assume.units import BaseUnit, demand_side_technologies, unit_types
+from assume.units.sequential_units import SequentialUnitMixin
 
 file_handler = logging.FileHandler(filename="assume.log", mode="w+")
 stdout_handler = logging.StreamHandler(stream=sys.stdout)
@@ -751,6 +752,8 @@ class World:
                 )
                 raise ValueError(msg)
 
+        self._validate_sequential_setup(unit_operators)
+
         # Existence of demand implies existence of generation and vice versa.
         demand_exists, generation_exists = False, False
 
@@ -780,6 +783,38 @@ class World:
                 f"This indicates an incomplete simulation setup."
             )
             warnings.warn(msg)
+
+    def _validate_sequential_setup(self, unit_operators: list) -> None:
+        """
+        Sequential markets are opt-in: units bidding in an imbalance settlement
+        market must be sequential units, and sequential units must bid in one.
+        """
+        settlement_markets = {
+            market_id
+            for market_id, config in self.markets.items()
+            if config.param_dict.get("imbalance_settlement")
+        }
+        for operator in unit_operators:
+            for unit in operator.units.values():
+                unit_markets = set(unit.bidding_strategies.keys())
+                if not isinstance(unit, SequentialUnitMixin):
+                    for market_id in sorted(unit_markets & settlement_markets):
+                        raise ValueError(
+                            f"Unit '{unit.id}' ({type(unit).__name__}) bids in "
+                            f"market '{market_id}', which sets "
+                            "param_dict.imbalance_settlement, but it is not a "
+                            "sequential unit. Map its unit type to a sequential "
+                            "one via 'unit_types' in the config (e.g. "
+                            "power_plant: sequential_power_plant)."
+                        )
+                elif not unit_markets & settlement_markets:
+                    raise ValueError(
+                        f"Sequential unit '{unit.id}' ({type(unit).__name__}) bids "
+                        f"in markets {sorted(unit_markets)}, none of which sets "
+                        "param_dict.imbalance_settlement, so its physical output "
+                        "would never be settled. Add an imbalance settlement "
+                        "market or use a non-sequential unit type."
+                    )
 
     async def _step(self, container):
         """

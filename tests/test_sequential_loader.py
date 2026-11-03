@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from assume import World
 from assume.scenario.loader_csv import (
@@ -61,3 +62,35 @@ def test_unit_types_mapping():
     ]
     assert plants
     assert all(isinstance(u, MyPP) for u in plants)
+
+
+def _gb_world(edit_config) -> World:
+    world = World()
+    world.scenario_data = load_config_and_create_forecaster(
+        "examples/inputs", "example_gb_01", "base"
+    )
+    edit_config(world.scenario_data["config"])
+    setup_world(world=world)
+    return world
+
+
+def test_gb_setup_is_valid():
+    world = _gb_world(lambda config: None)
+    world._validate_setup()
+
+
+def test_settlement_market_requires_sequential_units():
+    world = _gb_world(lambda config: config.pop("unit_types"))
+    with pytest.raises(ValueError, match=r"Unit '\w+'.*market 'BAL'"):
+        world._validate_setup()
+
+
+def test_sequential_units_require_settlement_market():
+    def drop_settlement(config):
+        config["markets_config"]["BAL"]["param_dict"].pop("imbalance_settlement")
+
+    world = _gb_world(drop_settlement)
+    with pytest.raises(
+        ValueError, match=r"Sequential unit '\w+'.*imbalance_settlement"
+    ):
+        world._validate_setup()
