@@ -75,7 +75,6 @@ User Guide
 ==========
 
 * :doc:`market_config`
-* :doc:`sequential_markets`
 * :doc:`market_mechanism`
 * :doc:`scenario_loader`
 * :doc:`outputs`
@@ -98,7 +97,6 @@ User Guide
    :caption: User Guide
 
    market_config
-   sequential_markets
    market_mechanism
    scenario_loader
    outputs
