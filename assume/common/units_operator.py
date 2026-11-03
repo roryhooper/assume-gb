@@ -241,11 +241,49 @@ class UnitsOperator(Role):
         marketconfig = self.registered_markets[content["market_id"]]
         self.valid_orders[marketconfig.product_type].extend(orderbook)
         self.set_unit_dispatch(orderbook, marketconfig)
-        self.write_actual_dispatch(marketconfig.product_type)
 
         # now once we have the market results and the dispatch has been set
         # we can calculate the cashflow and reward for the units
         self.calculate_unit_cashflow_and_reward(orderbook, marketconfig)
+
+        is_settlement = bool(marketconfig.param_dict.get("imbalance_settlement"))
+        if is_settlement:
+            self.settle_imbalance(orderbook, marketconfig)
+
+        # in sequential mode only the settlement market exports the dispatch,
+        # as physical output is only known after settlement
+        sequential_mode = any(
+            m.param_dict.get("imbalance_settlement")
+            for m in self.registered_markets.values()
+        )
+        if is_settlement or not sequential_mode:
+            self.write_actual_dispatch(marketconfig.product_type)
+
+    def settle_imbalance(
+        self, orderbook: Orderbook, marketconfig: MarketConfig
+    ) -> None:
+        """
+        Settles the imbalance of each unit for each product of a balancing market result.
+
+        Args:
+            orderbook (Orderbook): The orderbook of the balancing market, including
+                notification orders carrying ``fpn``, ``position``, ``accepted_volume``
+                and ``accepted_price``.
+            marketconfig (MarketConfig): The market configuration.
+        """
+        orderbook.sort(key=itemgetter("unit_id", "start_time"))
+        for unit_id, unit_orders in groupby(orderbook, itemgetter("unit_id")):
+            unit = self.units[unit_id]
+            strategy = unit.bidding_strategies[marketconfig.market_id]
+            for t, orders in groupby(unit_orders, itemgetter("start_time")):
+                orders = list(orders)
+                unit.settle(
+                    t,
+                    orders[0]["fpn"],
+                    sum(o["accepted_volume"] for o in orders),
+                    orders[0]["accepted_price"],
+                )
+                strategy.on_settlement(unit, t)
 
     def handle_registration_feedback(
         self, content: RegistrationMessage, meta: MetaDict
@@ -389,6 +427,11 @@ class UnitsOperator(Role):
                 "generation_costs",
                 "total_costs",
                 "heat",
+                "profit",
+                "imbalance",
+                "physical",
+                "fpn",
+                "position",
             ]
 
             for key in unit.outputs.keys():

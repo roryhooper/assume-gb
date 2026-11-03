@@ -727,6 +727,15 @@ class BaseStrategy:
             orderbook (Orderbook): The orderbook.
         """
 
+    def on_settlement(self, unit: BaseUnit, start: datetime) -> None:
+        """
+        Hook called after the unit has been settled for the product starting at ``start``.
+
+        Args:
+            unit (BaseUnit): The unit.
+            start (datetime): The start of the settled product.
+        """
+
     def remove_empty_bids(self, bids: list) -> list:
         """
         Removes empty bids from the orderbook. Use this method to clean the bids before submitting
