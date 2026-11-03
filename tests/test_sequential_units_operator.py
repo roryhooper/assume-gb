@@ -121,14 +121,30 @@ async def test_non_settlement_market_does_not_settle(units_operator: UnitsOperat
 async def test_sequential_mode_suppresses_other_dispatch_writes(
     units_operator: UnitsOperator,
 ):
+    sent = []
+    units_operator.context.data["output_agent_addr"] = "out"
+    units_operator.context.schedule_instant_message = lambda **kw: sent.append(
+        kw["content"]
+    )
+    clock = units_operator.context.context.clock
+    clock.set_time(datetime2timestamp(start) + 3600)
+    order = notification("DA")
+    order["accepted_volume"] = -100
+    order["accepted_price"] = 50
     content = {
         "context": "clearing",
         "market_id": "DA",
-        "accepted_orders": [],
-        "rejected_orders": [notification("DA")],
+        "accepted_orders": [order],
+        "rejected_orders": [],
     }
     units_operator.handle_market_feedback(content, {})
-    assert units_operator.last_sent_dispatch["energy"] == 0
+    types = [m["type"] for m in sent]
+    assert "market_dispatch" in types
+    assert "unit_dispatch" not in types
+    market_dispatch = next(m for m in sent if m["type"] == "market_dispatch")
+    assert len(market_dispatch["data"]) > 0
+    # order ended at start + 1h <= now, so it is pruned
+    assert units_operator.valid_orders["energy"] == []
 
 
 async def test_settlement_market_writes_dispatch(units_operator: UnitsOperator):

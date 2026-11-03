@@ -250,14 +250,16 @@ class UnitsOperator(Role):
         if is_settlement:
             self.settle_imbalance(orderbook, marketconfig)
 
-        # in sequential mode only the settlement market exports the dispatch,
+        # in sequential mode only the settlement market exports unit dispatch,
         # as physical output is only known after settlement
         sequential_mode = any(
             m.param_dict.get("imbalance_settlement")
             for m in self.registered_markets.values()
         )
-        if is_settlement or not sequential_mode:
-            self.write_actual_dispatch(marketconfig.product_type)
+        self.write_actual_dispatch(
+            marketconfig.product_type,
+            include_units=is_settlement or not sequential_mode,
+        )
 
     def settle_imbalance(
         self, orderbook: Orderbook, marketconfig: MarketConfig
@@ -390,7 +392,7 @@ class UnitsOperator(Role):
         )
 
     def get_actual_dispatch(
-        self, product_type: str, last: datetime
+        self, product_type: str, last: datetime, include_units: bool = True
     ) -> tuple[list[tuple[datetime, float, str, str]], list[dict]]:
         """
         Retrieves the actual dispatch since the last dispatch and commits it in the unit.
@@ -400,6 +402,7 @@ class UnitsOperator(Role):
         Args:
             product_type (str): The product type for which this is done
             last (datetime.datetime): the last date until which the dispatch was already sent
+            include_units (bool): If False, unit dispatch is skipped and left empty.
 
         Returns:
             tuple[list[tuple[datetime, float, str, str]], list[dict]]: market_dispatch and unit_dispatch dataframes
@@ -416,7 +419,7 @@ class UnitsOperator(Role):
         )
 
         unit_dispatch = []
-        for unit_id, unit in self.units.items():
+        for unit_id, unit in self.units.items() if include_units else ():
             current_dispatch = unit.execute_current_dispatch(start, now)
             end = now
             dispatch = {"power": current_dispatch}
@@ -444,12 +447,15 @@ class UnitsOperator(Role):
 
         return market_dispatch, unit_dispatch
 
-    def write_actual_dispatch(self, product_type: str) -> None:
+    def write_actual_dispatch(
+        self, product_type: str, include_units: bool = True
+    ) -> None:
         """
         Sends the actual aggregated dispatch curve to the output agent.
 
         Args:
             product_type (str): The type of the product.
+            include_units (bool): If False, only market dispatch is sent.
         """
 
         last = self.last_sent_dispatch[product_type]
@@ -458,7 +464,9 @@ class UnitsOperator(Role):
             return
         self.last_sent_dispatch[product_type] = self.context.current_timestamp
 
-        market_dispatch, unit_dispatch = self.get_actual_dispatch(product_type, last)
+        market_dispatch, unit_dispatch = self.get_actual_dispatch(
+            product_type, last, include_units
+        )
 
         now = timestamp2datetime(self.context.current_timestamp)
         self.valid_orders[product_type] = list(
