@@ -28,6 +28,10 @@ from assume.strategies.naive_strategies import (
     EnergyHeuristicElasticStrategy,
     DsmCapacityHeuristicBalancingStrategy,
 )
+from assume.strategies.sequential_strategies import (
+    DemandSequentialFixedStrategy,
+    RenewableSequentialHeuristicStrategy,
+)
 from assume.strategies.interactive_strategies import EnergyInteractiveStrategy
 from assume.strategies.dmas_powerplant import EnergyOptimizationDmasStrategy
 from assume.strategies.dmas_storage import StorageEnergyOptimizationDmasStrategy
@@ -93,6 +97,8 @@ bidding_strategies: dict[str, type[BaseStrategy | UnitOperatorStrategy]] = {
     "units_operator_direct": UnitsOperatorDirectStrategy,
     "powerplant_energy_naive_profile": EnergyNaiveProfileStrategy,
     "powerplant_energy_interactive": EnergyInteractiveStrategy,
+    "demand_sequential_fixed": DemandSequentialFixedStrategy,
+    "renewable_sequential_heuristic": RenewableSequentialHeuristicStrategy,
 }
 
 try:
