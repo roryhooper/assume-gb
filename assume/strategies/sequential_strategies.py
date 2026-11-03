@@ -217,7 +217,8 @@ class StorageSequentialHeuristicStrategy(
     The value v of stored energy is the mean reference price over
     ``±storage_foresight``: the ``DA`` price forecast in DA, realised DA prices
     (falling back to the forecast) in ID and BAL. Energy markets charge at
-    ``v·η_ch`` and discharge at ``v/η_dis``. Every volume (energy bids, FPN and
+    ``v·η_ch`` and discharge at ``v/η_dis``. When v is missing or ≤ 0 the
+    bands would invert, so that hour gets no bid and no BAL offer. Every volume (energy bids, FPN and
     FPN plus any accepted BAL volume) stays within the power limits and the
     SOC limits, so settlement never has to clip the SOC.
     """
@@ -319,7 +320,8 @@ class StorageSequentialHeuristicStrategy(
             volume = 0.0
             price = self.reference_price(unit, market_config, t)
             value = self.energy_value(unit, market_config, t)
-            if price is not None and value is not None:
+            # v <= 0 inverts or collapses the charge/discharge bands: no bid
+            if price is not None and value is not None and value > 0:
                 discharge_price = value / unit.efficiency_discharge
                 charge_price = value * unit.efficiency_charge
                 # headroom is the SOC-feasible total minus the held position
@@ -341,7 +343,7 @@ class StorageSequentialHeuristicStrategy(
     def balancing_offers(self, unit, market_config, product, fpn):
         t = product[0]
         value = self.energy_value(unit, market_config, t)
-        if value is None:
+        if value is None or value <= 0:
             return []
         lo, hi = self.power_bounds(unit, self.planned_soc(unit, t))
         offers = []

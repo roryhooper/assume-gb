@@ -454,3 +454,29 @@ def test_storage_registered():
         bidding_strategies["storage_sequential_heuristic"]
         is StorageSequentialHeuristicStrategy
     )
+
+
+def test_storage_zero_value_no_da_bids():
+    bat = make_storage(initial_soc=0.5, da_prices=0.0)
+    assert bat.calculate_bids(DA, products(24, DAY)) == []
+
+
+def test_storage_zero_value_bal_notification_only():
+    bat = make_storage(initial_soc=0.5, da_prices=0.0, bal_markup=5)
+    bat.outputs["energy"].at[DAY] = 30
+    bids = bat.calculate_bids(BAL, products(1, DAY))
+    assert len(bids) == 1
+    assert bids[0]["volume"] == 0
+    assert bids[0]["fpn"] == pytest.approx(30)
+    assert bids[0]["position"] == 30
+
+
+def test_storage_negative_value_no_bids():
+    # v < 0 inverts the bands (v/eta < v*eta): p = -10 lies in both of them
+    prices = [-12.0] + [-10.0] * 23
+    bat = make_storage(initial_soc=0.5, da_prices=prices)
+    assert bat.calculate_bids(DA, products(24, DAY)) == []
+    record_realised(bat, DA, {0: -12.0})
+    assert bat.calculate_bids(ID, products(24, DAY)) == []
+    bids = bat.calculate_bids(BAL, products(1, DAY))
+    assert len(bids) == 1 and bids[0]["volume"] == 0
