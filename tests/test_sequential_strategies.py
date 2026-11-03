@@ -7,15 +7,24 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from assume.common.forecaster import DemandForecaster, PowerplantForecaster
+from assume.common.forecaster import (
+    DemandForecaster,
+    PowerplantForecaster,
+    UnitForecaster,
+)
 from assume.common.market_objects import MarketConfig
 from assume.strategies import bidding_strategies
 from assume.strategies.sequential_strategies import (
     DemandSequentialFixedStrategy,
     PowerplantSequentialHeuristicStrategy,
     RenewableSequentialHeuristicStrategy,
+    StorageSequentialHeuristicStrategy,
 )
-from assume.units.sequential_units import SequentialDemand, SequentialPowerPlant
+from assume.units.sequential_units import (
+    SequentialDemand,
+    SequentialPowerPlant,
+    SequentialStorage,
+)
 
 T = datetime(2022, 1, 1, 5)
 H = timedelta(hours=1)
@@ -250,4 +259,198 @@ def test_gas_registered():
     assert (
         bidding_strategies["powerplant_sequential_heuristic"]
         is PowerplantSequentialHeuristicStrategy
+    )
+
+
+# --- storage -----------------------------------------------------------------
+
+DAY = datetime(2022, 1, 1)
+
+
+def make_storage(initial_soc=0.5, da_prices=50.0, bal_markup=0.0):
+    """100 MW / 200 MWh battery, eff 0.9/0.9; ``da_prices=None`` -> no DA forecast."""
+    market_prices = {"EOM": 50} if da_prices is None else {"DA": da_prices}
+    forecaster = UnitForecaster(INDEX, market_prices=market_prices)
+    strategy = StorageSequentialHeuristicStrategy(bal_markup=bal_markup)
+    return SequentialStorage(
+        id="bat",
+        unit_operator="op",
+        technology="battery",
+        bidding_strategies={"DA": strategy, "ID": strategy, "BAL": strategy},
+        forecaster=forecaster,
+        max_power_charge=-100,
+        max_power_discharge=100,
+        capacity=200,
+        efficiency_charge=0.9,
+        efficiency_discharge=0.9,
+        min_soc=0,
+        max_soc=1,
+        initial_soc=initial_soc,
+    )
+
+
+def record_realised(unit, market_config, prices):
+    strategy = unit.bidding_strategies[market_config.market_id]
+    orders = [
+        {
+            "start_time": DAY + h * H,
+            "end_time": DAY + (h + 1) * H,
+            "accepted_volume": 0,
+            "accepted_price": price,
+        }
+        for h, price in prices.items()
+    ]
+    strategy.calculate_reward(unit, market_config, orders)
+
+
+def roll_soc(unit, soc, volume):
+    if volume > 0:
+        return soc - volume / unit.efficiency_discharge / unit.capacity
+    return soc - volume * unit.efficiency_charge / unit.capacity
+
+
+def step_prices():
+    return [20.0] * 6 + [100.0] * 6 + [60.0] * 12
+
+
+def test_storage_no_inc_at_min_soc():
+    bat = make_storage(initial_soc=0)
+    bat.outputs["energy"].at[T] = 50  # sold a discharge it cannot deliver
+    bids = bat.calculate_bids(BAL, products())
+    assert not [b for b in bids if b["volume"] > 0]
+    assert all(b["fpn"] <= 0 for b in bids)
+    assert all(b["position"] == 50 for b in bids)
+    # the whole charge range is offered as dec
+    assert [b["volume"] for b in bids] == pytest.approx([-100])
+
+
+def test_storage_no_dec_at_max_soc():
+    bat = make_storage(initial_soc=1)
+    bat.outputs["energy"].at[T] = -50  # bought a charge it cannot absorb
+    bids = bat.calculate_bids(BAL, products())
+    assert not [b for b in bids if b["volume"] < 0]
+    assert all(b["fpn"] >= 0 for b in bids)
+    assert [b["volume"] for b in bids] == pytest.approx([100])
+
+
+def test_storage_arbitrage_da():
+    bat = make_storage(initial_soc=0, da_prices=step_prices())
+    prods = products(12, DAY)
+    bids = bat.calculate_bids(DA, prods)
+    by_hour = {(b["start_time"] - DAY) // H: b for b in bids}
+    assert by_hour, "expected arbitrage bids"
+    assert all(b["volume"] < 0 for h, b in by_hour.items() if h < 6)
+    assert all(b["volume"] > 0 for h, b in by_hour.items() if h >= 6)
+    assert any(h < 6 for h in by_hour) and any(h >= 6 for h in by_hour)
+    # v = 60 in every hour: charge at v*0.9, discharge at v/0.9
+    assert all(
+        b["price"] == pytest.approx(54 if b["volume"] < 0 else 60 / 0.9) for b in bids
+    )
+    soc = 0.0
+    for h in range(12):
+        soc = roll_soc(bat, soc, by_hour[h]["volume"] if h in by_hour else 0)
+        assert -1e-9 <= soc <= 1 + 1e-9
+    # fills the battery (100, 100, 22.2) and empties it (100, 80)
+    assert [by_hour[h]["volume"] for h in sorted(by_hour)] == pytest.approx(
+        [-100, -100, -200 / 9, 100, 80]
+    )
+
+
+def test_storage_id_uses_realised_da_price():
+    bat = make_storage(initial_soc=0, da_prices=50.0)
+    prods = products(12, DAY)
+    assert bat.calculate_bids(ID, prods) == []  # flat forecast: no spread
+    record_realised(bat, DA, {h: 20.0 if h < 6 else 100.0 for h in range(12)})
+    bids = bat.calculate_bids(ID, prods)
+    hours = {(b["start_time"] - DAY) // H: b["volume"] for b in bids}
+    assert hours
+    assert all(v < 0 for h, v in hours.items() if h < 6)
+    assert all(v > 0 for h, v in hours.items() if h >= 6)
+    assert any(h < 6 for h in hours) and any(h >= 6 for h in hours)
+
+
+def test_storage_missing_prices_no_keyerror():
+    bat = make_storage(da_prices=None)
+    prods = products(24, DAY)
+    assert bat.calculate_bids(DA, prods) == []
+    assert bat.calculate_bids(ID, prods) == []
+    bids = bat.calculate_bids(BAL, products())
+    assert len(bids) == 1
+    assert bids[0]["volume"] == 0 and bids[0]["fpn"] == 0
+
+
+def test_storage_id_offers_only_remaining_soc_headroom():
+    # soc 0.25 -> SOC allows 0.25 * 200 * 0.9 = 45 MW of discharge in hour 0
+    bat = make_storage(initial_soc=0.25, da_prices=50.0)
+    bat.outputs["energy"].at[DAY] = 40  # DA discharge position
+    record_realised(bat, DA, {0: 100.0})
+    (bid,) = bat.calculate_bids(ID, products(1, DAY))
+    assert bid["volume"] == pytest.approx(5)
+    v = (100 + 12 * 50) / 13
+    assert bid["price"] == pytest.approx(v / 0.9)
+
+
+def test_storage_balancing_fpn_plus_bal_soc_feasible():
+    bat = make_storage(initial_soc=0.25, da_prices=50.0, bal_markup=5)
+    bat.outputs["energy"].at[DAY] = 40
+    bids = bat.calculate_bids(BAL, products(1, DAY))
+    by_sign = {b["volume"] > 0: b for b in bids}
+    assert all(b["fpn"] == pytest.approx(40) for b in bids)
+    assert by_sign[True]["volume"] == pytest.approx(5)  # up to 45 MW total
+    assert by_sign[False]["volume"] == pytest.approx(-140)  # down to -100 MW
+    assert by_sign[True]["price"] == pytest.approx(50 / 0.9 + 5)
+    assert by_sign[False]["price"] == pytest.approx(50 * 0.9 - 5)
+    for b in bids:
+        physical = b["fpn"] + b["volume"]
+        soc = roll_soc(bat, 0.25, physical)
+        assert -1e-9 <= soc <= 1 + 1e-9
+        assert -100 - 1e-9 <= physical <= 100 + 1e-9
+
+
+def test_storage_fpn_clipped_to_soc_limit():
+    bat = make_storage(initial_soc=0.25, da_prices=50.0)
+    bat.outputs["energy"].at[DAY] = 100
+    bids = bat.calculate_bids(BAL, products(1, DAY))
+    assert all(b["fpn"] == pytest.approx(45) for b in bids)
+    assert all(b["position"] == 100 for b in bids)
+    assert not [b for b in bids if b["volume"] > 0]
+
+
+def test_storage_planned_soc_rolls_position_from_last_settlement():
+    bat = make_storage(initial_soc=0, da_prices=50.0)
+    strategy = bat.bidding_strategies["DA"]
+    bat.outputs["energy"].loc[DAY : DAY + 2 * H] = -100
+    assert strategy.planned_soc(bat, DAY) == pytest.approx(0)
+    assert strategy.planned_soc(bat, DAY + 2 * H) == pytest.approx(0.9)
+    # hour 0 settles with 50 MW of inc accepted: only 50 MW charged
+    bat.settle(DAY, fpn=-100, accepted_balancing=50, price=0)
+    strategy.on_settlement(bat, DAY)
+    assert strategy.planned_soc(bat, DAY + H) == pytest.approx(0.225)
+    assert strategy.planned_soc(bat, DAY + 2 * H) == pytest.approx(0.675)
+
+
+def test_storage_planned_soc_rolls_with_feasible_dispatch():
+    bat = make_storage(initial_soc=0.25, da_prices=50.0)
+    strategy = bat.bidding_strategies["DA"]
+    bat.outputs["energy"].at[DAY] = 100  # only 45 MW deliverable
+    assert strategy.planned_soc(bat, DAY + H) == pytest.approx(0)
+
+
+def test_storage_settlement_of_fpn_plus_bal_never_clips(caplog):
+    bat = make_storage(initial_soc=0.25, da_prices=50.0)
+    strategy = bat.bidding_strategies["BAL"]
+    bat.outputs["energy"].at[DAY] = 40
+    bids = bat.calculate_bids(BAL, products(1, DAY))
+    inc = max(b["volume"] for b in bids)
+    with caplog.at_level("WARNING"):
+        bat.settle(DAY, fpn=bids[0]["fpn"], accepted_balancing=inc, price=0)
+        strategy.on_settlement(bat, DAY)
+    assert "clipped" not in caplog.text
+    assert bat.outputs["soc"].at[DAY + H] == pytest.approx(0)
+
+
+def test_storage_registered():
+    assert (
+        bidding_strategies["storage_sequential_heuristic"]
+        is StorageSequentialHeuristicStrategy
     )
