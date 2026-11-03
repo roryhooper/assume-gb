@@ -82,8 +82,11 @@ def test_per_market_cashflow_split(plant):
     plant.set_dispatch_plan(mc("energy", "ID"), [idm])
     plant.calculate_cashflow("energy", [idm])
     assert plant.outputs["energy_cashflow"].at[T] == 2800
-    assert plant.outputs["cashflow_DA"].at[T] == 4000
-    assert plant.outputs["cashflow_ID"].at[T] == -1200
+    # lower-case keys: outputs.check_columns lower-cases names, so mixed-case
+    # columns break unit_dispatch writes on PostgreSQL
+    assert plant.outputs["cashflow_da"].at[T] == 4000
+    assert plant.outputs["cashflow_id"].at[T] == -1200
+    assert not any(key != key.lower() for key in plant.outputs)
 
 
 def test_execute_does_not_clip_position(plant):

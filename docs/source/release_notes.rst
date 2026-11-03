@@ -21,7 +21,7 @@ Upcoming Release
   - **GB-style sequential markets** (see :doc:`sequential_markets`): an opt-in DA -> ID -> hourly BAL -> imbalance settlement setup.
 
     - New clearing mechanism ``balancing_pay_as_clear``: computes the net imbalance volume (NIV) from unit FPNs and positions and clears it against inc/dec offers with the TSO as only counterparty.
-    - New unit types ``sequential_power_plant``, ``sequential_storage`` and ``sequential_demand`` that keep the financial position (``energy``, ``balancing_energy``) separate from the metered ``fpn`` and ``physical`` output and write per-market ``cashflow_<market_id>``.
+    - New unit types ``sequential_power_plant``, ``sequential_storage`` and ``sequential_demand`` that keep the financial position (``energy``, ``balancing_energy``) separate from the metered ``fpn`` and ``physical`` output and write per-market ``cashflow_<market_id>`` (lower-cased market id, e.g. ``cashflow_da``).
     - New strategies ``powerplant_sequential_heuristic``, ``renewable_sequential_heuristic``, ``storage_sequential_heuristic`` and ``demand_sequential_fixed`` with the parameters ``bal_markup``, ``sellback_price`` and ``storage_foresight``.
     - Imbalance settlement via ``imbalance_settlement: true`` in the ``param_dict`` of the balancing market. The opt-in is validated at setup: a ``ValueError`` is raised if a non-sequential unit bids in a settlement market or a sequential unit bids in none.
     - New loader options: ``unit_types`` in the study case, ``forecast_vintage`` in the market ``param_dict`` and the optional forecast vintage files ``availability_da_df.csv``, ``availability_id_df.csv``, ``demand_da_df.csv`` and ``demand_id_df.csv`` (forecasters provide ``get_availability(vintage)`` and ``get_demand(vintage)``).

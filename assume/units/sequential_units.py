@@ -46,7 +46,10 @@ class SequentialUnitMixin:
                 cashflow = np.array([float(price[i] * volume[i]) for i in volume])
             else:
                 cashflow = float(price * volume)
-            self.outputs[f"cashflow_{market_id}"].loc[start:end_excl] += cashflow
+            # lower-case: outputs.check_columns compares lower-cased names, so
+            # mixed-case columns fail to be added on PostgreSQL
+            key = f"cashflow_{market_id.lower()}"
+            self.outputs[key].loc[start:end_excl] += cashflow
 
     def net_position(self, t: datetime) -> float:
         return float(

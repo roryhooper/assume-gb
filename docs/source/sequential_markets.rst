@@ -124,7 +124,7 @@ All keys are used in the study case of ``config.yaml``; see ``examples/inputs/ex
   financial. They write the metered output to ``fpn`` and ``physical``, return ``physical`` from
   ``execute_current_dispatch``, move the storage SOC on ``physical`` and compute generation costs from ``physical`` (written to
   both ``generation_costs`` and ``energy_generation_costs``, the column the Grafana dashboards read). They also write
-  ``cashflow_<market_id>``, so DA and ID revenue can be told apart (``energy_cashflow`` is still their sum).
+  ``cashflow_<market_id>`` (market id lower-cased, e.g. ``cashflow_da``), so DA and ID revenue can be told apart (``energy_cashflow`` is still their sum).
 
   The opt-in is checked before the simulation runs: a ``ValueError`` is raised if a unit bids in a market with
   ``imbalance_settlement`` but is not a sequential unit, or if a sequential unit bids in no market with
