@@ -122,8 +122,13 @@ All keys are used in the study case of ``config.yaml``; see ``examples/inputs/ex
 
   The sequential units (``assume/units/sequential_units.py``) never clip ``energy`` or ``balancing_energy``, which are
   financial. They write the metered output to ``fpn`` and ``physical``, return ``physical`` from
-  ``execute_current_dispatch``, move the storage SOC on ``physical`` and compute generation costs from ``physical``. They also
-  write ``cashflow_<market_id>``, so DA and ID revenue can be told apart (``energy_cashflow`` is still their sum).
+  ``execute_current_dispatch``, move the storage SOC on ``physical`` and compute generation costs from ``physical`` (written to
+  both ``generation_costs`` and ``energy_generation_costs``, the column the Grafana dashboards read). They also write
+  ``cashflow_<market_id>``, so DA and ID revenue can be told apart (``energy_cashflow`` is still their sum).
+
+  The opt-in is checked before the simulation runs: a ``ValueError`` is raised if a unit bids in a market with
+  ``imbalance_settlement`` but is not a sequential unit, or if a sequential unit bids in no market with
+  ``imbalance_settlement``.
 
 ``forecast_vintage`` (market ``param_dict``)
   Selects the forecast vintage a market uses: ``da``, ``id`` or ``actual``. The example uses DA = ``da``, ID = ``id`` and
@@ -133,7 +138,8 @@ All keys are used in the study case of ``config.yaml``; see ``examples/inputs/ex
   ``true`` enables settlement in ``UnitsOperator.handle_market_feedback`` on BAL feedback. For each unit and hour it adds the
   accepted BAL volume to ``balancing_energy``, sets ``physical = fpn + accepted``, computes the imbalance and its cashflow at
   the BAL price, sets ``profit`` = DA + ID + BAL + imbalance cashflows - generation costs, and calls the strategy hook
-  ``on_settlement``. In this mode ``unit_dispatch`` is written only on BAL feedback.
+  ``on_settlement``. In this mode ``unit_dispatch`` is written only on BAL feedback, for every hour up to and including the
+  products just settled, so each delivery hour (including the last one) is exported exactly once.
 
 ``additional_fields`` (BAL market)
   ``fpn`` and ``position``, the extra order fields the clearing needs.
@@ -145,7 +151,10 @@ Vintage files
 
 Price forecast
   ``forecasts_df.csv`` holds a single ``price_DA`` column, computed by the generator from a merit order against the DA-vintage
-  demand and renewables. Only the battery's DA bidding uses it.
+  demand and renewables. Only the battery's DA bidding uses it, but it is required whenever a unit uses
+  ``storage_sequential_heuristic``: without it ``forecaster.price["DA"]`` falls back to ASSUME's naive price forecast, which is
+  built from the actual availability and demand and so gives the battery perfect foresight in DA. A warning is logged at
+  setup if the column is missing.
 
 Strategies
 ==========
@@ -230,10 +239,19 @@ places no bids and no BAL offers in that hour.
 Known limitations
 =================
 
-- The battery sizes its DA bids assuming that each is accepted. If a charge/discharge pair is only partly accepted, its
-  position can become SOC-infeasible. Its FPN is then clipped to the SOC limits and the difference is carried as imbalance
-  (about 6 hours in the example's base run). There is no ID repair step yet.
-- ASSUME has no end-of-run dispatch flush, so the last 1-2 hours may be missing from ``unit_dispatch``.
+- The battery's committed position can become SOC-infeasible. Its FPN is then clipped to the SOC limits and the difference
+  is carried as imbalance. There is no ID repair step yet. There are two causes:
+
+  - The battery sizes its DA bids assuming that each is accepted. If a charge/discharge pair is only partly accepted, the
+    remaining position may not be feasible.
+  - BAL offers are checked for SOC feasibility only one step ahead. An accepted BAL action can fill or empty the battery so
+    that DA/ID positions committed for later hours become infeasible. For example, on 2019-01-10 a partial DA discharge at
+    08-09 and a BAL dec at 10:00 leave the SOC at 1.0, so the DA charges at 14-16 cannot be delivered (+222 MWh imbalance).
+    These 3 hours are the battery's only imbalance in the example's base run.
+
+- The gas strategy sizes its DA and ID volumes from the actual ``availability_df.csv`` series, not from a forecast vintage.
+  This is harmless in the example (availability 1), but if outages are modelled through the availability series the gas
+  plant would know them in advance.
 - The following are out of scope: capacity/reserve markets, perfect-foresight and learning strategies (only the
   ``on_settlement`` hook exists), continuous ID, networks and several units per technology.
 
@@ -261,6 +279,6 @@ Things to expect:
 - With ``--sigma-da 0 --sigma-id 0`` (perfect forecasts) NIV is 0 in every hour and no unit has an imbalance. This is checked by
   ``tests/test_sequential_integration.py``.
 - The warnings ``Forecast could not be calculated for BAL`` at startup are expected: BAL is not an energy product.
-- The DA price spikes in the base run (up to about 863 EUR/MWh on 2019-01-10) are expected. Gas capacity equals peak demand,
-  so a DA over-forecast of demand at low wind pushes the merit-order ``price_DA`` forecast to the 3000 cap in a few hours,
+- The DA price spikes in the base run (up to about £863/MWh on 2019-01-10) are expected. Gas capacity equals peak demand,
+  so a DA over-forecast of demand at low wind pushes the merit-order ``price_DA`` forecast to the £3000/MWh cap in a few hours,
   and the battery's valuation reflects it.
