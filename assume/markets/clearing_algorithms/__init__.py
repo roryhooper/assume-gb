@@ -7,6 +7,7 @@ from assume.markets.base_market import MarketRole
 
 from .contracts import PayAsBidContractRole
 from .simple import PayAsBidRole, PayAsClearRole
+from .balancing import BalancingPayAsClearRole
 from .complex_clearing import ComplexClearingRole
 from .complex_clearing_dmas import ComplexDmasClearingRole
 
@@ -16,6 +17,7 @@ clearing_mechanisms: dict[str, MarketRole] = {
     "pay_as_bid_contract": PayAsBidContractRole,
     "complex_clearing": ComplexClearingRole,
     "pay_as_clear_complex_dmas": ComplexDmasClearingRole,
+    "balancing_pay_as_clear": BalancingPayAsClearRole,
 }
 
 # try importing pypsa if it is installed
