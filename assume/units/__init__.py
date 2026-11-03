@@ -13,6 +13,11 @@ from assume.units.steam_generation_plant import SteamPlant
 from assume.units.hydrogen_plant import HydrogenPlant
 from assume.units.building import Building
 from assume.units.dst_components import demand_side_technologies
+from assume.units.sequential_units import (
+    SequentialDemand,
+    SequentialPowerPlant,
+    SequentialStorage,
+)
 
 unit_types: dict[str, type[BaseUnit]] = {
     "power_plant": PowerPlant,
@@ -24,4 +29,7 @@ unit_types: dict[str, type[BaseUnit]] = {
     "hydrogen_plant": HydrogenPlant,
     "steam_plant": SteamPlant,
     "building": Building,
+    "sequential_power_plant": SequentialPowerPlant,
+    "sequential_storage": SequentialStorage,
+    "sequential_demand": SequentialDemand,
 }
