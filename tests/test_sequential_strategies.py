@@ -12,6 +12,7 @@ from assume.common.market_objects import MarketConfig
 from assume.strategies import bidding_strategies
 from assume.strategies.sequential_strategies import (
     DemandSequentialFixedStrategy,
+    PowerplantSequentialHeuristicStrategy,
     RenewableSequentialHeuristicStrategy,
 )
 from assume.units.sequential_units import SequentialDemand, SequentialPowerPlant
@@ -62,6 +63,30 @@ def wind():
         additional_cost=2,
         fuel_type="renewable",
         emission_factor=0,
+        forecaster=forecaster,
+    )
+
+
+@pytest.fixture
+def gas():
+    forecaster = PowerplantForecaster(
+        INDEX,
+        availability=1,
+        fuel_prices={"natural gas": 25, "co2": 80},
+        market_prices={},
+    )
+    strategy = PowerplantSequentialHeuristicStrategy(bal_markup=10)
+    return SequentialPowerPlant(
+        id="gas",
+        unit_operator="op",
+        technology="ccgt",
+        bidding_strategies={"DA": strategy, "ID": strategy, "BAL": strategy},
+        index=forecaster.index,
+        max_power=1000,
+        min_power=0,
+        efficiency=0.55,
+        fuel_type="natural gas",
+        emission_factor=0.2,
         forecaster=forecaster,
     )
 
@@ -163,4 +188,66 @@ def test_registered():
     assert (
         bidding_strategies["renewable_sequential_heuristic"]
         is RenewableSequentialHeuristicStrategy
+    )
+
+
+def test_gas_da_offers_full_capacity(gas):
+    prods = products(24, datetime(2022, 1, 1))
+    bids = gas.calculate_bids(DA, prods)
+    assert len(bids) == 24
+    for bid, prod in zip(bids, prods):
+        mc = gas.calculate_marginal_cost(prod[0], 1000)
+        assert bid["volume"] == pytest.approx(1000)
+        assert bid["price"] == pytest.approx(mc)
+    assert bids[0]["price"] == pytest.approx(74.5, abs=0.5)
+
+
+def test_gas_id_incremental(gas):
+    gas.outputs["energy"].at[T] = 600
+    bids = gas.calculate_bids(ID, products())
+    mc = gas.calculate_marginal_cost(T, 600)
+    assert sorted(b["volume"] for b in bids) == pytest.approx([-600, 400])
+    assert all(b["price"] == pytest.approx(mc) for b in bids)
+
+
+def test_gas_id_buyback_never_below_min_power(gas):
+    gas.min_power = 200
+    gas.outputs["energy"].at[T] = 600
+    bids = gas.calculate_bids(ID, products())
+    assert sorted(b["volume"] for b in bids) == pytest.approx([-400, 400])
+
+
+def test_gas_balancing_inc_dec(gas):
+    gas.outputs["energy"].at[T] = 700
+    bids = gas.calculate_bids(BAL, products())
+    mc = gas.calculate_marginal_cost(T, 700)
+    by_volume = {round(b["volume"]): b for b in bids}
+    assert set(by_volume) == {300, -700}
+    assert by_volume[300]["price"] == pytest.approx(mc + 10)
+    assert by_volume[-700]["price"] == pytest.approx(mc - 10)
+    assert all(b["fpn"] == 700 and b["position"] == 700 for b in bids)
+
+
+def test_gas_balancing_no_negative_capacity(gas):
+    gas.outputs["energy"].at[T] = 1000
+    bids = gas.calculate_bids(BAL, products())
+    assert [b["volume"] for b in bids] == pytest.approx([-1000])
+
+
+def test_gas_balancing_notification_when_off(gas):
+    gas.forecaster.availability[:] = 0
+    bids = gas.calculate_bids(BAL, products())
+    assert len(bids) == 1 and bids[0]["volume"] == 0 and bids[0]["fpn"] == 0
+
+
+def test_gas_fpn_follows_position(gas):
+    gas.outputs["energy"].at[T] = 400
+    bids = gas.calculate_bids(BAL, products())
+    assert all(b["fpn"] == 400 for b in bids)
+
+
+def test_gas_registered():
+    assert (
+        bidding_strategies["powerplant_sequential_heuristic"]
+        is PowerplantSequentialHeuristicStrategy
     )

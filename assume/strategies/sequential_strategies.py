@@ -157,3 +157,44 @@ class RenewableSequentialHeuristicStrategy(SequentialMarketStrategy, MinMaxStrat
             return []
         mc = unit.calculate_marginal_cost(product[0], 0)
         return [self.make_order(unit, product, mc - self.bal_markup, -fpn)]
+
+
+class PowerplantSequentialHeuristicStrategy(SequentialMarketStrategy, MinMaxStrategy):
+    """Sells headroom and buys back committed output above min_power at marginal cost."""
+
+    def bid_energy(self, unit, market_config, product_tuples):
+        bids = []
+        for product in product_tuples:
+            t = product[0]
+            # calculate_min_max_power clips its minimum at zero (heat demand
+            # floor), so the buy-back towards min_power is derived directly.
+            _, max_p = unit.calculate_min_max_power(t, product[1])
+            max_p = max_p[0]
+            position = unit.outputs["energy"].at[t]
+            min_p = unit.min_power - position
+            mc = unit.calculate_marginal_cost(t, position)
+            if max_p > EPS:
+                bids.append(self.make_order(unit, product, mc, max_p))
+            if min_p < -EPS:
+                bids.append(self.make_order(unit, product, mc, min_p))
+        return bids
+
+    @staticmethod
+    def _capacity(unit, start):
+        return unit.forecaster.availability.at[start] * unit.max_power
+
+    def decide_dispatch(self, unit, start):
+        position = unit.outputs["energy"].at[start]
+        return min(max(position, unit.min_power), self._capacity(unit, start))
+
+    def balancing_offers(self, unit, market_config, product, fpn):
+        t = product[0]
+        mc = unit.calculate_marginal_cost(t, fpn)
+        offers = []
+        inc = self._capacity(unit, t) - fpn
+        if inc > EPS:
+            offers.append(self.make_order(unit, product, mc + self.bal_markup, inc))
+        dec = fpn - unit.min_power
+        if dec > EPS:
+            offers.append(self.make_order(unit, product, mc - self.bal_markup, -dec))
+        return offers
