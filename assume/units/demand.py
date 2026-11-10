@@ -168,6 +168,14 @@ class Demand(SupportsMinMax):
         """
         return self.price.at[start]
 
+    def calculate_operating_cost(self, start: datetime, end: datetime) -> np.ndarray:
+        """
+        Returns zeros: an inflexible demand's outcome is its payments, and its
+        ``price`` is a willingness to pay, not a cost.
+        """
+        start = max(start, self.index[0])
+        return np.zeros(len(self.index[start:end]))
+
     def as_dict(self) -> dict:
         """
         Returns the unit as a dictionary.

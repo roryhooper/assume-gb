@@ -319,3 +319,65 @@ def test_order_without_market_id_unchanged(base_unit):
     base_unit.calculate_cashflow("energy", [order])
     assert base_unit.outputs["energy"][base_unit.index[1]] == 40
     assert not any(k.endswith(("_EOM", "_DA", "_ID")) for k in base_unit.outputs)
+
+
+class _CostUnit(BaseUnit):
+    def calculate_marginal_cost(self, start, power):
+        return 40
+
+
+@pytest.fixture
+def cost_unit() -> _CostUnit:
+    index = pd.date_range("2022-01-01", periods=4, freq="1h")
+    forecaster = PowerplantForecaster(index, availability=1)
+    return _CostUnit(
+        id="cost_pp",
+        unit_operator="test_operator",
+        technology="base",
+        bidding_strategies={"DA": BasicStrategy(), "ID": BasicStrategy()},
+        forecaster=forecaster,
+        index=forecaster.index,
+    )
+
+
+def test_operating_cost_default_cost_is_abs_volume_times_mc(cost_unit):
+    cost_unit.outputs["energy"].loc[cost_unit.index[1] : cost_unit.index[2]] = [
+        100,
+        -50,
+    ]
+    cost = cost_unit.calculate_operating_cost(cost_unit.index[0], cost_unit.index[-1])
+    assert list(cost) == [0, 4000, 2000, 0]
+
+
+def test_profit_attribution_sums_to_total(cost_unit):
+    da = MarketConfig(market_id="DA", product_type="energy")
+    id_ = MarketConfig(market_id="ID", product_type="energy")
+    for mc, vol, price in [(da, 100, 60), (id_, -100, 30)]:
+        order = _market_order(cost_unit, vol, price, mc.market_id)
+        cost_unit.set_dispatch_plan(mc, [order])
+        cost_unit.calculate_cashflow("energy", [order])
+    # profit calculated at the end of cashflow: DA sells at 60 with mc 40, then
+    # ID buys back at 30, avoiding the 40 cost
+    out = cost_unit.outputs
+    t = cost_unit.index[1]
+    assert out["energy_total_costs_DA"][t] == pytest.approx(4000)
+    assert out["energy_total_costs_ID"][t] == pytest.approx(-4000)
+    assert out["energy_profit_DA"][t] == pytest.approx(6000 - 4000)
+    assert out["energy_profit_ID"][t] == pytest.approx(-3000 + 4000)
+    assert out["energy_profit_ID"][t] > 0
+    final_cost = cost_unit.calculate_operating_cost(
+        cost_unit.index[0], cost_unit.index[-1]
+    )
+    total_profit = out["energy_profit_DA"].data + out["energy_profit_ID"].data
+    assert total_profit.sum() == pytest.approx(
+        out["energy_cashflow"].data.sum() - final_cost.sum()
+    )
+
+
+def test_capacity_product_not_attributed(cost_unit):
+    mc = MarketConfig(market_id="CAP", product_type="capacity_pos")
+    order = _market_order(cost_unit, 10, 5, "CAP")
+    cost_unit.set_dispatch_plan(mc, [order])
+    cost_unit.calculate_cashflow("capacity_pos", [order])
+    assert "capacity_pos_total_costs_CAP" not in cost_unit.outputs
+    assert "capacity_pos_profit_CAP" not in cost_unit.outputs

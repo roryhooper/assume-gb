@@ -145,8 +145,23 @@ class BaseUnit:
                 added_volume = list(order["accepted_volume"].values())
             else:
                 added_volume = order["accepted_volume"]
-            self.outputs[product_type].loc[start:end_excl] += added_volume
             market_id = order.get("market_id")
+            attribute_costs = market_id is not None and product_type == "energy"
+            if attribute_costs:
+                # cost of the position path before this order, from the first
+                # affected hour to the end of the index (a volume change can
+                # reclassify a later start-up, so the whole tail is needed)
+                cost_start = max(start, self.index[0])
+                cost_before = self.calculate_operating_cost(cost_start, self.index[-1])
+            self.outputs[product_type].loc[start:end_excl] += added_volume
+            if attribute_costs:
+                cost_delta = (
+                    self.calculate_operating_cost(cost_start, self.index[-1])
+                    - cost_before
+                )
+                self.outputs[f"{product_type}_total_costs_{market_id}"].loc[
+                    cost_start:
+                ] += cost_delta
             if market_id is not None:
                 self.outputs[f"{product_type}_{market_id}"].loc[start:end_excl] += (
                     added_volume
@@ -160,6 +175,30 @@ class BaseUnit:
             self.outputs[f"{product_type}_accepted_price"].loc[start:end_excl] = (
                 accepted_price
             )
+
+    def calculate_operating_cost(self, start: datetime, end: datetime) -> np.ndarray:
+        """
+        Calculates the hourly cost of the current position path in ``outputs["energy"]``.
+
+        Both start and end are inclusive. The default is ``abs(P_t) * marginal_cost(t, P_t)``.
+
+        Args:
+            start (datetime.datetime): The first time step (inclusive).
+            end (datetime.datetime): The last time step (inclusive).
+
+        Returns:
+            np.ndarray: The operating cost per time step.
+        """
+        start = max(start, self.index[0])
+        power = np.asarray(self.outputs["energy"].loc[start:end], dtype=float)
+        times = self.index[start:end]
+        return np.array(
+            [
+                abs(p) * self.calculate_marginal_cost(t, p) if p != 0 else 0.0
+                for t, p in zip(times, power)
+            ],
+            dtype=float,
+        )
 
     def calculate_cashflow_and_reward(
         self,
@@ -301,6 +340,19 @@ class BaseUnit:
                     start:end_excl
                 ] += cashflow * elapsed_intervals
 
+        if product_type != "energy":
+            return
+        # profit per market: cashflow minus the operating cost booked in set_dispatch_plan
+        for market_id in {
+            o["market_id"] for o in orderbook if o.get("market_id") is not None
+        }:
+            self.outputs[f"{product_type}_profit_{market_id}"].loc[
+                self.index[0] : self.index[-1]
+            ] = (
+                self.outputs[f"{product_type}_cashflow_{market_id}"].data
+                - self.outputs[f"{product_type}_total_costs_{market_id}"].data
+            )
+
     def get_starting_costs(self, op_time: int) -> float:
         """
         Returns the costs if start-up is planned.
@@ -440,6 +492,30 @@ class SupportsMinMax(BaseUnit):
 
         # Return positive time if operating, negative if shut down
         return -run if is_off else run
+
+    def calculate_operating_cost(self, start: datetime, end: datetime) -> np.ndarray:
+        """
+        Running cost of the current position path plus start-up costs.
+
+        A start-up is booked at every off-to-on transition of ``outputs["energy"]``
+        (the hour before the index counts as off). The down time is the number of
+        consecutive zero steps before the transition, counted on the series itself
+        from the beginning of the index, and is passed as ``-count`` to
+        :meth:`get_starting_costs`. Both ends are inclusive.
+        """
+        start = max(start, self.index[0])
+        cost = super().calculate_operating_cost(start, end)
+        power = np.asarray(self.outputs["energy"].loc[self.index[0] : end], dtype=float)
+        offset = len(power) - len(cost)
+        zeros = 0
+        for i, p in enumerate(power):
+            if p == 0:
+                zeros += 1
+                continue
+            if p > 0 and (i == 0 or power[i - 1] == 0) and i >= offset:
+                cost[i - offset] += self.get_starting_costs(-zeros)
+            zeros = 0
+        return cost
 
     def get_starting_costs(self, op_time: int) -> float:
         """

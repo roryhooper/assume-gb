@@ -655,3 +655,86 @@ def test_initialising_invalid_powerplants():
 if __name__ == "__main__":
     # run pytest and enable prints
     pytest.main(["-s", __file__])
+
+
+def _startup_plant(index_len=10):
+    index = pd.date_range("2022-01-01", periods=index_len, freq="h")
+    forecaster = PowerplantForecaster(
+        index,
+        availability=1,
+        fuel_prices={"lignite": 10, "co2": 10},
+        market_prices={"EOM": 0},
+    )
+    return PowerPlant(
+        id="su_pp",
+        unit_operator="test_operator",
+        technology="hard coal",
+        bidding_strategies={"EOM": EnergyNaiveStrategy()},
+        index=forecaster.index,
+        max_power=1000,
+        min_power=0,
+        efficiency=0.5,
+        additional_cost=10,
+        fuel_type="lignite",
+        forecaster=forecaster,
+        emission_factor=0.5,
+        hot_start_cost=1,
+        warm_start_cost=2,
+        cold_start_cost=3,
+        downtime_hot_start=2,
+        downtime_warm_start=4,
+    )
+
+
+def _dispatch(unit, market_id, hour, volume, price=50):
+    from assume.common.market_objects import MarketConfig
+
+    mc = MarketConfig(market_id=market_id, product_type="energy")
+    order = {
+        "start_time": unit.index[hour],
+        "end_time": unit.index[hour] + unit.index.freq,
+        "accepted_volume": volume,
+        "accepted_price": price,
+        "market_id": market_id,
+    }
+    unit.set_dispatch_plan(mc, [order])
+    unit.calculate_cashflow("energy", [order])
+
+
+def test_operating_cost_includes_startups():
+    unit = _startup_plant()
+    _dispatch(unit, "DA", 4, 500)
+    cost = unit.calculate_operating_cost(unit.index[0], unit.index[-1])
+    mc = unit.calculate_marginal_cost(unit.index[4], 500)
+    # off for hours 0-3 (4 steps) -> warm start (> hot 2, <= warm 4)
+    assert cost[4] == pytest.approx(500 * mc + unit.get_starting_costs(-4))
+    assert unit.get_starting_costs(-4) == unit.warm_start_cost
+    assert cost[5] == 0
+    # continuing operation adds no start-up cost
+    _dispatch(unit, "DA", 5, 500)
+    cost = unit.calculate_operating_cost(unit.index[0], unit.index[-1])
+    assert cost[5] == pytest.approx(500 * mc)
+
+
+def test_attribution_catches_distant_start_reclassification():
+    unit = _startup_plant()
+    _dispatch(unit, "DA", 8, 500)  # long off period 0-7 -> cold start at 8
+    cold = unit.outputs["energy_total_costs_DA"][unit.index[8]]
+    assert cold == pytest.approx(
+        500 * unit.calculate_marginal_cost(unit.index[8], 500) + unit.cold_start_cost
+    )
+    # ID adds running at hour 5: a new cold start there (5 off steps), and the
+    # start at hour 8 is reclassified from cold to hot (only 2 off steps left)
+    _dispatch(unit, "ID", 5, 500)
+    costs_id = unit.outputs["energy_total_costs_ID"]
+    assert costs_id[unit.index[5]] == pytest.approx(
+        500 * unit.calculate_marginal_cost(unit.index[5], 500) + unit.cold_start_cost
+    )
+    assert costs_id[unit.index[8]] == pytest.approx(
+        unit.hot_start_cost - unit.cold_start_cost
+    )
+    total = sum(
+        unit.outputs[f"energy_total_costs_{m}"].data.sum() for m in ("DA", "ID")
+    )
+    final = unit.calculate_operating_cost(unit.index[0], unit.index[-1]).sum()
+    assert total == pytest.approx(final)
