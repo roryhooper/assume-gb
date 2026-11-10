@@ -146,6 +146,11 @@ class BaseUnit:
             else:
                 added_volume = order["accepted_volume"]
             self.outputs[product_type].loc[start:end_excl] += added_volume
+            market_id = order.get("market_id")
+            if market_id is not None:
+                self.outputs[f"{product_type}_{market_id}"].loc[start:end_excl] += (
+                    added_volume
+                )
 
             # Get the accepted price and store it in the outputs
             if isinstance(order["accepted_price"], dict):
@@ -290,6 +295,11 @@ class BaseUnit:
             self.outputs[f"{product_type}_cashflow"].loc[start:end_excl] += (
                 cashflow * elapsed_intervals
             )
+            market_id = order.get("market_id")
+            if market_id is not None:
+                self.outputs[f"{product_type}_cashflow_{market_id}"].loc[
+                    start:end_excl
+                ] += cashflow * elapsed_intervals
 
     def get_starting_costs(self, op_time: int) -> float:
         """

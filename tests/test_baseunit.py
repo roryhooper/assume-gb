@@ -274,3 +274,48 @@ def test_clear_empty_bids(base_unit, mock_market_config):
 
 if __name__ == "__main__":
     pytest.main(["-s", __file__])
+
+
+def _market_order(unit, volume, price, market_id=None):
+    order = {
+        "start_time": unit.index[1],
+        "end_time": unit.index[1] + unit.index.freq,
+        "accepted_volume": volume,
+        "accepted_price": price,
+    }
+    if market_id is not None:
+        order["market_id"] = market_id
+    return order
+
+
+def test_per_market_volume_tracking(base_unit):
+    da = MarketConfig(market_id="DA", product_type="energy")
+    id_ = MarketConfig(market_id="ID", product_type="energy")
+    base_unit.set_dispatch_plan(da, [_market_order(base_unit, 100, 50, "DA")])
+    base_unit.set_dispatch_plan(id_, [_market_order(base_unit, -30, 60, "ID")])
+    t = base_unit.index[1]
+    assert base_unit.outputs["energy"][t] == 70
+    assert base_unit.outputs["energy_DA"][t] == 100
+    assert base_unit.outputs["energy_ID"][t] == -30
+
+
+def test_per_market_cashflow_sums_to_total(base_unit):
+    for mid, vol, price in [("DA", 100, 50), ("ID", -30, 60)]:
+        base_unit.calculate_cashflow(
+            "energy", [_market_order(base_unit, vol, price, mid)]
+        )
+    out = base_unit.outputs
+    for t in base_unit.index:
+        assert out["energy_cashflow"][t] == pytest.approx(
+            out["energy_cashflow_DA"][t] + out["energy_cashflow_ID"][t]
+        )
+    assert out["energy_cashflow_DA"][base_unit.index[1]] != 0
+
+
+def test_order_without_market_id_unchanged(base_unit):
+    mc = MarketConfig(market_id="EOM", product_type="energy")
+    order = _market_order(base_unit, 40, 10)
+    base_unit.set_dispatch_plan(mc, [order])
+    base_unit.calculate_cashflow("energy", [order])
+    assert base_unit.outputs["energy"][base_unit.index[1]] == 40
+    assert not any(k.endswith(("_EOM", "_DA", "_ID")) for k in base_unit.outputs)
