@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 from pandas._testing import assert_series_equal
 
+from assume.common.exceptions import ValidationError
 from assume.common.fast_pandas import FastIndex, FastSeries
 from assume.common.forecast_algorithms import (
     calculate_naive_congestion_signal,
@@ -24,6 +25,7 @@ from assume.common.forecaster import (
     DsmUnitForecaster,
     ExchangeForecaster,
     PowerplantForecaster,
+    UnitForecaster,
     UnitsOperatorForecaster,
 )
 from assume.common.market_objects import MarketConfig, MarketProduct
@@ -575,3 +577,31 @@ def test_naive_forecast__exchange_imports_are_supply(index, shared_FastIndex):
     # export of 40 MW: residual demand of 160 MW needs the expensive plant
     assert list(price) == [10] * 3 + [50] * 4
     assert list(residual_load) == [70] * 3 + [160] * 4
+
+
+def test_get_availability_fallback(shared_FastIndex):
+    fc = UnitForecaster(
+        index=shared_FastIndex, availability=0.8, availability_forecast={"DA": 0.5}
+    )
+    assert fc.get_availability("DA").iloc[0] == 0.5
+    assert fc.get_availability("ID").iloc[0] == 0.8  # no ID entry -> realised
+    assert fc.get_availability().iloc[0] == 0.8  # None -> realised
+
+
+def test_availability_forecast_validated(shared_FastIndex):
+    with pytest.raises(ValidationError):
+        UnitForecaster(index=shared_FastIndex, availability_forecast={"DA": 1.2})
+
+
+def test_get_demand_fallback(shared_FastIndex):
+    fc = DemandForecaster(
+        index=shared_FastIndex, demand=-100, demand_forecast={"DA": -90}
+    )
+    assert fc.get_demand("DA").iloc[0] == -90
+    assert fc.get_demand("ID").iloc[0] == -100
+    assert fc.get_demand().iloc[0] == -100
+
+
+def test_demand_forecast_validated(shared_FastIndex):
+    with pytest.raises(ValidationError):
+        DemandForecaster(index=shared_FastIndex, demand_forecast={"DA": 5})

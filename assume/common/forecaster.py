@@ -179,6 +179,7 @@ class UnitForecaster:
         availability: ForecastSeries = 1,
         forecast_algorithms: dict[str, str] = {},
         forecast_registries: dict[str, dict] = None,
+        availability_forecast: dict[str, ForecastSeries] | None = None,
     ):
         if not isinstance(index, FastIndex):
             index = FastIndex(start=index[0], end=index[-1], freq=pd.infer_freq(index))
@@ -189,6 +190,15 @@ class UnitForecaster:
             raise ValidationError(
                 message="Availability must be between 0 and 1", field="availability"
             )
+        self.availability_forecast: dict[str, FastSeries] = self._dict_to_series(
+            availability_forecast or {}
+        )
+        for market_id, series in self.availability_forecast.items():
+            if any(series < 0) or any(series > 1):
+                raise ValidationError(
+                    message=f"Availability forecast for market {market_id} must be between 0 and 1",
+                    field="availability_forecast",
+                )
         self.forecast_algorithms = forecast_algorithms
         self._registries = forecast_registries
         if market_prices is None:
@@ -200,6 +210,12 @@ class UnitForecaster:
             residual_load
         )
         self.preprocess_information = {}
+
+    def get_availability(self, market_id: str | None = None) -> FastSeries:
+        """Availability forecast for *market_id*, falling back to the realised ``availability``."""
+        if market_id is None:
+            return self.availability
+        return self.availability_forecast.get(market_id, self.availability)
 
     def _to_series(self, item: ForecastSeries) -> FastSeries:
         """Wrap *item* in a ``FastSeries`` aligned to ``self.index`` (no-op if already one)."""
@@ -406,6 +422,8 @@ class DemandForecaster(UnitForecaster):
         availability: ForecastSeries = 1,
         forecast_algorithms: dict[str, str] = {},
         forecast_registries: dict[str, dict] = None,
+        availability_forecast: dict[str, ForecastSeries] | None = None,
+        demand_forecast: dict[str, ForecastSeries] | None = None,
     ):
         super().__init__(
             index=index,
@@ -414,10 +432,26 @@ class DemandForecaster(UnitForecaster):
             forecast_registries=forecast_registries,
             market_prices=market_prices,
             residual_load=residual_load,
+            availability_forecast=availability_forecast,
         )
         self.demand = self._to_series(demand)
         if any(self.demand > 0):
             raise ValidationError(message="demand must be negative", field="demand")
+        self.demand_forecast: dict[str, FastSeries] = self._dict_to_series(
+            demand_forecast or {}
+        )
+        for market_id, series in self.demand_forecast.items():
+            if any(series > 0):
+                raise ValidationError(
+                    message=f"demand forecast for market {market_id} must be negative",
+                    field="demand_forecast",
+                )
+
+    def get_demand(self, market_id: str | None = None) -> FastSeries:
+        """Demand forecast for *market_id*, falling back to the realised ``demand``."""
+        if market_id is None:
+            return self.demand
+        return self.demand_forecast.get(market_id, self.demand)
 
 
 class PowerplantForecaster(UnitForecaster):
