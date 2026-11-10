@@ -4,6 +4,7 @@
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -211,3 +212,24 @@ def test_csv_loader_shares_fuel_prices():
     assert first.fuel_prices.keys() == second.fuel_prices.keys()
     for fuel in first.fuel_prices:
         assert first.fuel_prices[fuel] is second.fuel_prices[fuel]
+
+
+def test_loader_per_market_forecasts():
+    """Per-market forecast files are loaded; markets without a file fall back to the realised series."""
+    scenario_data = load_config_and_create_forecaster(
+        inputs_path="tests/fixtures", scenario="per_market_forecasts", study_case="base"
+    )
+    forecasts = scenario_data["unit_forecasts"]
+    pp, dem = forecasts["pp1"], forecasts["dem1"]
+
+    assert set(pp.availability_forecast) == {"DA"}
+    assert set(dem.availability_forecast) == set()
+    assert set(dem.demand_forecast) == {"DA"}
+
+    assert (np.asarray(pp.get_availability("DA")) == 0.8).all()
+    assert (np.asarray(pp.get_availability("ID")) == 0.5).all()
+    assert (np.asarray(pp.get_availability()) == 0.5).all()
+
+    expected_da = -(200.0 + pd.Series(range(len(np.asarray(dem.get_demand("DA"))))))
+    assert (np.asarray(dem.get_demand("DA")) == expected_da.to_numpy()).all()
+    assert (np.asarray(dem.get_demand("ID")) == -100.0).all()

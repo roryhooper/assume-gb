@@ -727,6 +727,47 @@ def load_config_and_create_forecaster(
     if availability is None:
         availability = pd.DataFrame(index=index)
 
+    # optional per-market forecast files, only for markets declared in markets_config
+    availability_by_market: dict[str, pd.DataFrame] = {}
+    demand_by_market: dict[str, pd.DataFrame] = {}
+    for market_id in config["markets_config"].keys():
+        market_availability = load_file(
+            path=path,
+            config=config,
+            file_name=f"availability_{market_id}_df",
+            index=index,
+        )
+        if market_availability is not None:
+            if market_availability.max().max() > 1:
+                logger.warning(
+                    f"Availability for market {market_id} contains values larger than 1. "
+                    "This is not allowed. The availability will be normalized automatically. "
+                    "The quality of the automatic normalization is not guaranteed."
+                )
+                market_availability = normalize_availability(
+                    powerplant_units, market_availability
+                )
+            availability_by_market[market_id] = market_availability
+        market_demand = load_file(
+            path=path, config=config, file_name=f"demand_{market_id}_df", index=index
+        )
+        if market_demand is not None:
+            demand_by_market[market_id] = market_demand
+
+    def unit_availability_forecasts(unit_id) -> dict[str, pd.Series]:
+        return {
+            market_id: df[unit_id]
+            for market_id, df in availability_by_market.items()
+            if unit_id in df.columns
+        }
+
+    def unit_demand_forecasts(unit_id) -> dict[str, pd.Series]:
+        return {
+            market_id: -df[unit_id].abs()
+            for market_id, df in demand_by_market.items()
+            if unit_id in df.columns
+        }
+
     fuel_prices_df = load_file(
         path=path, config=config, file_name="fuel_prices_df", index=index
     )
@@ -754,6 +795,7 @@ def load_config_and_create_forecaster(
             unit_forecasts[id] = PowerplantForecaster(
                 index=shared_unit_index,
                 availability=availability.get(id, pd.Series(1.0, index, name=id)),
+                availability_forecast=unit_availability_forecasts(id),
                 fuel_prices=fuel_prices,
                 forecast_algorithms=get_unit_forecast_algorithms(
                     forecast_algorithms, plant
@@ -765,6 +807,8 @@ def load_config_and_create_forecaster(
                 index=shared_unit_index,
                 availability=availability.get(id, pd.Series(1.0, index, name=id)),
                 demand=-demand_df[id].abs(),
+                availability_forecast=unit_availability_forecasts(id),
+                demand_forecast=unit_demand_forecasts(id),
                 forecast_algorithms=get_unit_forecast_algorithms(
                     forecast_algorithms, demand
                 ),
@@ -774,6 +818,7 @@ def load_config_and_create_forecaster(
             unit_forecasts[id] = UnitForecaster(
                 index=shared_unit_index,
                 availability=availability.get(id, pd.Series(1.0, index, name=id)),
+                availability_forecast=unit_availability_forecasts(id),
                 forecast_algorithms=get_unit_forecast_algorithms(
                     forecast_algorithms, storage
                 ),

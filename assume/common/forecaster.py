@@ -473,6 +473,7 @@ class PowerplantForecaster(UnitForecaster):
         availability: ForecastSeries = 1,
         forecast_algorithms: dict[str, str] = {},
         forecast_registries: dict[str, dict] = None,
+        availability_forecast: dict[str, ForecastSeries] | None = None,
     ):
         super().__init__(
             index=index,
@@ -481,6 +482,7 @@ class PowerplantForecaster(UnitForecaster):
             forecast_registries=forecast_registries,
             market_prices=market_prices,
             residual_load=residual_load,
+            availability_forecast=availability_forecast,
         )
         if fuel_prices is None:
             fuel_prices = {}
