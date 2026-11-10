@@ -6,4 +6,9 @@ version = 1
 SPDX-PackageName = "ASSUME"
 SPDX-PackageSupplier = "ASSUME Developers <contact@assume-project.de>"
 SPDX-PackageDownloadLocation = "https://github.com/assume-framework/assume/"
-annotations = []
+
+[[annotations]]
+path = "tests/fixtures/per_market_forecasts/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "ASSUME Developers"
+SPDX-License-Identifier = "MIT"
