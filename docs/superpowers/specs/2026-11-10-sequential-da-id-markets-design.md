@@ -124,7 +124,7 @@ Single-market behaviour is unchanged. When a unit holds no earlier position and 
 
 ### 4.3 Forecast algorithms (`assume/common/forecast_algorithms.py`)
 
-- `calculate_max_power` and `calculate_sum_demand` take a `market_id` argument and use the getters.
+- `calculate_max_power` and `calculate_sum_demand` take a `market_id` argument and use the getters. It defaults to `None` (the realised series), so their other callers — the congestion signal and renewable-utilisation forecasts — are unaffected.
 - `calculate_naive_price_inelastic`, `calculate_naive_price_elastic` and `calculate_naive_residual_load` pass `config.market_id`.
 - **Result:** the DA and ID price forecasts differ by exactly the forecast revision.
 - **Why this is a reasonable proxy:** when bids reflect cost, the ID auction re-dispatches towards the merit order of the updated residual load. The merit-order price at that load therefore approximates the ID price, apart from effects of DA commitments such as start-ups already paid for and storage state of charge.
@@ -145,6 +145,7 @@ Single-market behaviour is unchanged. When a unit holds no earlier position and 
 - `UnitsOperator.get_actual_dispatch`:
   - copies the position for the hours being executed before calling `execute_current_dispatch`;
   - then writes `outputs["energy_deviation"]` = physical output − position.
+- **End-of-simulation flush:** `write_actual_dispatch` currently runs only from `handle_market_feedback`. With daily markets, the last feedback (ID at 23:00 on D−1) comes *before* the final delivery day, so that day's dispatch would never be executed or exported. `UnitsOperator` gains an `on_stop` that calls `write_actual_dispatch` for each traded product type, mirroring the output agent's existing `on_stop` flush.
 
 ### 5.2 Per-market cashflow
 
@@ -158,8 +159,8 @@ Single-market behaviour is unchanged. When a unit holds no earlier position and 
   - `SupportsMinMax`: adds start-up costs (`get_starting_costs`) for off→on transitions.
   - `Demand`: returns zeros. An inflexible demand has no operating cost; its economic outcome is its payments, which are already in its cashflow. Its `price` is a willingness to pay used for bidding, not a cost it incurs.
 - **In `set_dispatch_plan`:**
-  - evaluate `calculate_operating_cost` over the affected hours plus one hour after them (because start-up costs depend on the previous hour's state), before and after applying the market's volumes;
-  - store the difference in `outputs[f"{product_type}_total_costs_{market_id}"]`.
+  - evaluate `calculate_operating_cost` from the first affected hour to the end of the unit index, before and after applying the market's volumes. The full-horizon window is needed for exactness: adding volume in one hour can split a long off-period and reclassify a *later* start from warm/cold to hot, outside any short window. Over a one-week hourly index the extra evaluation cost is negligible;
+  - store the difference (which is zero outside the hours whose cost actually changed) in `outputs[f"{product_type}_total_costs_{market_id}"]`.
 - **After the cashflow is computed:** `outputs[f"{product_type}_profit_{market_id}"]` = `energy_cashflow_<m>` − `energy_total_costs_<m>`.
 - **Property:** Σₘ profitₘ = total cashflow − cost of the final position.
 - **Export:** `get_actual_dispatch` adds `"energy_profit"` and `"energy_deviation"` to its `valid_outputs` substring filter. `energy_cashflow_<m>` and `energy_total_costs_<m>` already match the existing `"cashflow"` and `"total_costs"` filters. The existing strategy-level `profit` output is not exported, as today.
@@ -168,8 +169,8 @@ Single-market behaviour is unchanged. When a unit holds no earlier position and 
 
 - Signature: `calculate_min_max_power(start, end, product_type="energy", market_id=None)`. Overrides elsewhere (e.g. DSM units) accept and ignore the new argument.
 - `PowerPlant` uses `forecaster.get_availability(market_id)`; `Demand` uses `forecaster.get_demand(market_id)`.
-- **With a `market_id`:** the returned range is the *economic* range relative to the **corrected** position *P*₀ + *c* (§5.5), so correction bids and economic bids never overlap.
-- **Without one:** behaviour is unchanged.
+- **With a `market_id`:** the returned range is the *economic* range relative to the **corrected** position *P*꜀ = *P*₀ + *c* (§5.5): for `PowerPlant`, [*m*ₜ − *P*꜀, *U*ₜ − *P*꜀] (zeros if the unit cannot run). The additional minimum **may be negative** — that is the unit's capacity to reduce a committed position — so the existing ≥ 0 clipping of the additional min and max does **not** apply on this path. Correction bids and economic bids never overlap, because both are measured from *P*꜀.
+- **Without one:** behaviour is unchanged, including the ≥ 0 clipping.
 - Storage charge and discharge ranges are unchanged.
 
 ### 5.5 Forced corrections
@@ -205,6 +206,7 @@ Single-market behaviour is unchanged. When a unit holds no earlier position and 
 - The economic range doesn't overlap the correction.
 - Partial-load cost matches the curve, and the curve is selected by technology.
 - The unit dispatch export for an existing single-market example matches today's apart from the new columns.
+- The `on_stop` flush exports the final delivery day's dispatch (a daily-market run without it would lose that day).
 
 ## 6. Strategies
 
@@ -379,6 +381,7 @@ In `calculate_order_surplus` (`assume/markets/clearing_algorithms/complex_cleari
 - `config.yaml`, study case `base`:
   - `start_date: 2019-03-17 00:00`, `end_date: 2019-03-25 00:00`, `time_step: 1h`.
   - 17 March is a lead day with no deliveries; 18–24 March is the delivered week; analysis excludes 17 March.
+  - Because the lead day has zero output, every thermal unit reads as long-off at the first DA auction and prices its first start accordingly (a cold start under `get_operation_time`'s look-back). This is intended; the first delivery day carries start-up effects.
 
 | | DA | ID |
 |---|---|---|
@@ -420,10 +423,11 @@ The per-market `end_date`s stop either market from opening for 25 March, which i
   - `min_soc` 0, `max_soc` 1, `initial_soc` 0.5;
   - technology `li-ion_battery`, `storage_energy_heuristic_flexable` in both markets.
   - Power and energy approximate total German storage (pumped hydro + batteries) × *k*, with example_01g's battery duration and efficiencies. example_01g's 30 €/MWh cost uses `variable_cost_*` column names that `Storage` doesn't read, so 5 €/MWh (a plausible degradation cost) is used instead.
-- **Demand** (`demand_units.csv`): one unit, `price` 3000, `demand_energy_naive` in both markets.
+- **Demand** (`demand_units.csv`): one unit, `max_power` −1000, `min_power` 0, `price` 3000, `demand_energy_naive` in both markets.
 - **Operators:** one per group: `Operator-RE`, `Operator-Gas`, `Operator-Coal`, `Operator-Storage`, `Operator-Demand`.
 - **Fuel prices:** example_03's `fuel_prices_df`, hourly mean, for the simulated window.
 - **Adequacy for the week:** dispatchable capacity is 873 MW, and residual load ranges from 167 to 874 MW. The one tight hour is covered by the battery.
+- **Reading scarcity prices:** a DA over-forecast of demand (or under-forecast of wind/solar) can push a DA hour to the 3000 cap even though realised capacity suffices, with ID correcting back down. This is an intended effect of forecast errors; the example docs say to check the ID price and the forecast error before reading a cap event as physical scarcity.
 
 ### 9.3 Generator `examples/inputs/example_01k/generate_inputs.py`
 
@@ -489,6 +493,7 @@ The v1 design deliberately leaves these extension points:
 2. **Deviation:** `energy_deviation` (physical − position) is already computed and exported. A balancing settlement prices this series.
 3. **Voluntary imbalance:** a strategy overrides only `correction_price`, e.g. returning the expected imbalance price from `forecaster.price["BAL"]`. The unit then corrects in ID only when that is cheaper than staying out of balance.
 4. **Balancing market:** it is another entry in `markets_config` with its own `market_id`, forecasts and clearing mechanism. Nothing in v1 assumes exactly two markets; all per-market logic is keyed by `market_id` and processed in clearing order.
+5. **Commitment-aware ID price forecast (addresses L3):** the forecaster's existing `update` lifecycle hook is the natural place to revise the ID price forecast after the DA result is known (e.g. from DA-committed positions and start-ups already paid for), without changing the forecaster interface again.
 
 ## 11. Known limitations
 
