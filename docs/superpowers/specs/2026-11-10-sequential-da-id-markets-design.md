@@ -261,8 +261,8 @@ In a single market the position is 0, so there's no buy bid and the result is id
 | **S** | Start | sell | *m* | single-hour BB, `min_acceptance_ratio: 1` |
 | **F** | Flexible | sell | *U* − *m* | LB, `parent_bid_id` = S |
 | **I** | Increase | sell | *U* − *P*꜀ | SB |
-| **D** | Decrease | buy | *P*꜀ − *m* | single-hour BB, can partly clear |
-| **X** | eXit (shut down) | buy | *m* | LB, `parent_bid_id` = D (BB without a parent if D has zero volume), `min_acceptance_ratio: 1` |
+| **D** | Decrease | buy | *P*꜀ − *m* | single-hour BB, can partly clear (on-a and on-c only) |
+| **X** | eXit (shut down) | buy | on-c: *m*; on-b: *P*꜀ | on-c: LB, `parent_bid_id` = D, `min_acceptance_ratio: 1` (plain BB with `min_acceptance_ratio: 1` if D has zero volume); on-b: single-hour BB, `min_acceptance_ratio: 1`, no parent |
 
 **Bid IDs.** Parent bids get explicit, unique ids: `f"{unit.id}_{kind}_{start:%Y%m%dT%H}"` with `kind` ∈ {S, D}.
 
@@ -284,10 +284,11 @@ In a single market the position is 0, so there's no buy bid and the result is id
 | Sub-case | Condition | Bids |
 |---|---|---|
 | on-a | shutdown not allowed | **I** at *p*mU = `calculate_chord_cost(m, U)`; **D** at *p*mU − 0.01 |
-| on-b | shutdown allowed and *p*₀m ≥ *p*mU (min load never best) | **I** at *p*₀U = (cost(*U*) − *R*)/*U*; **D** and **X** at *p*₀U − 0.01 |
+| on-b | shutdown allowed and *p*₀m ≥ *p*mU (min load never best) | **I** at *p*₀U = (cost(*U*) − *R*)/*U*; **X** of the whole position *P*꜀ at *p*₀U − 0.01; **no D** |
 | on-c | shutdown allowed and *p*₀m < *p*mU, with *p*₀m = (cost(*m*) − *R*)/*m* | **I** at *p*mU; **D** at *p*mU − 0.01; **X** at *p*₀m − 0.01 |
 
-   - **Edge cases:** if *P*꜀ = *U* there's no **I**; if *P*꜀ = *m* there's no **D** and **X** has no parent.
+   - **Why on-b bundles the whole position into one bid:** in on-b, the last *m* MW (X) are worth *more* per MWh than the reduction above them, so the tranches must not be separable. If D existed, the clearing could accept D *without* X whenever the system needs only a partial reduction; for prices between `calculate_chord_cost(m, P꜀)` and *p*₀U the unit would then pay more than it saves and be parked at min load — its worst extreme. Bundling removes that path, and loses nothing: in on-b a partial stop at min load is never the unit's optimum. In on-c the tranche values decrease with depth (D's price is above X's), so partial acceptance of D alone is exactly the min-load optimum and the D + linked-X structure is sound.
+   - **Edge cases:** if *P*꜀ = *U* there's no **I**; if *P*꜀ = *m* there's no **D**, and **X** is a plain single-hour BB with `min_acceptance_ratio: 1`.
 
 **Why one switch price.** Under partial-load efficiency, the average cost falls with output (cost(*P*) is concave), so profit for the hour is always highest at an extreme. Pricing a reduction and an increase at their own average costs would put the unit's buy price *above* its sell price. In the CCGT example, with *P*꜀ = 70, *m* = 40 and *U* = 100, D would be 47.1 and I 43.7 €/MWh. The welfare-maximising clearing would then match the unit with itself, leaving it at its worst option, possibly between 0 and min load, and adding fake welfare.
 
@@ -297,7 +298,7 @@ The switch prices increase with each step up in output, and every buy is set 0.0
 
 **In sequence:**
 - **DA:** every hour is "off", so the unit bids S + F. `complex_clearing` judges S together with its F bid (a child's surplus can justify its parent; this needs the §8.2 fix), so S + F behave like a single "start and run" offer.
-- **ID:** committed hours use the on cases. Example (on-b, CCGT 70 MW position, *R* small): an ID price of 45 is below *p*₀U ≈ 54.5, so D + X clear and the unit buys back all 70 MW, gaining ≈ +993 € against staying on. At 56, I clears and the unit ramps to *U*.
+- **ID:** committed hours use the on cases. Example (on-b, CCGT 70 MW position, *R* small): an ID price of 45 is below *p*₀U ≈ 54.5, so X (the whole 70 MW) clears and the unit buys back its position and shuts down, gaining ≈ +993 € against staying on. At 56, I clears and the unit ramps to *U*. With the example's actual start-up costs, running units fall into on-c, where partial reduction to min load (D) is also available.
 
 ### 6.5 Storage: `storage_energy_heuristic_flexable`
 
@@ -316,7 +317,8 @@ The switch prices increase with each step up in output, and every buy is set 0.0
   - volumes, prices and links;
   - every buy price is below every sell price for each unit-hour;
   - a buy-back clears when the ID price is below the switch price;
-  - X is suppressed when the minimum running or down time would be violated.
+  - X is suppressed when the minimum running or down time would be violated;
+  - in on-b there is no D bid, so no clearing outcome can park the unit at min load against its interest.
 - **Small `complex_clearing` run:** no unit ends between 0 and min load.
 
 ## 7. Fixes to the existing flexable strategy
