@@ -152,3 +152,7 @@ examples/notebooks/outputs
 *.nbconvert.ipynb
 fameSetup.yaml
 .claude
+
+# reuse annotate hook re-creates sidecars for these REUSE.toml-annotated fixtures; never commit them
+tests/fixtures/per_market_forecasts/*.license
+examples/inputs/example_01k/*.license
