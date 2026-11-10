@@ -313,6 +313,31 @@ def test_demand_energy_heuristic_elastic_config_and_errors():
         )
 
 
+def test_correction_demand():
+    index = pd.date_range(start=datetime(2023, 7, 1), periods=4, freq="1h")
+    dem = Demand(
+        id="demand",
+        unit_operator="UO1",
+        technology="energy",
+        bidding_strategies={"EOM": EnergyNaiveStrategy()},
+        max_power=-1000,
+        min_power=0,
+        forecaster=DemandForecaster(
+            index, demand=-1000, demand_forecast={"ID": [-980] * 4}
+        ),
+        price=2000,
+    )
+    dem.outputs["energy"].loc[index[0] : index[-1]] = -950
+    end = index[1] + index.freq
+    corr = dem.calculate_position_correction(index[0], end, "ID")
+    assert list(corr) == [-30, -30]
+    lo, hi = dem.calculate_min_max_power(index[0], end, market_id="ID")
+    assert list(lo) == [0, 0] and list(hi) == [0, 0]
+    # no market-specific forecast: falls back to realised demand
+    corr = dem.calculate_position_correction(index[0], end, "EOM")
+    assert list(corr) == [-50, -50]
+
+
 if __name__ == "__main__":
     test_demand()
 

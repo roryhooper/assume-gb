@@ -131,8 +131,36 @@ class Demand(SupportsMinMax):
 
         return self.outputs["energy"].loc[start:end]
 
+    def calculate_position_correction(
+        self, start: datetime, end: datetime, market_id: str
+    ) -> np.ndarray:
+        """
+        Forced correction to the demand forecast of *market_id*.
+
+        The feasible set is the single point ``demand_m(t)``, so the correction is
+        ``get_demand(market_id) - position``.
+
+        Args:
+            start (datetime): The start time of the first hour.
+            end (datetime): The end time of the last product (exclusive; last hour is
+                ``end - freq``, as in :meth:`calculate_min_max_power`).
+            market_id (str): The market whose demand forecast is used.
+
+        Returns:
+            np.ndarray: The correction per hour.
+        """
+        end_excl = end - self.index.freq
+        return np.asarray(
+            self.forecaster.get_demand(market_id).loc[start:end_excl]
+            - self.outputs["energy"].loc[start:end_excl]
+        )
+
     def calculate_min_max_power(
-        self, start: datetime, end: datetime, product_type="energy"
+        self,
+        start: datetime,
+        end: datetime,
+        product_type="energy",
+        market_id: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Calculates the minimum and maximum power output of the unit and returns the bid volume as both the minimum and maximum power output of the unit.
@@ -141,6 +169,10 @@ class Demand(SupportsMinMax):
             start (pandas.Timestamp): The start time of the dispatch.
             end (pandas.Timestamp): The end time of the dispatch (exclusive).
             product_type (str, optional): The product type. Defaults to "energy".
+            market_id (str | None, optional): If given, the whole adjustment to the market's
+                demand forecast is the forced correction
+                (:meth:`calculate_position_correction`), so the additional range is
+                ``(0, 0)``.
 
         Returns:
             tuple[np.ndarray, np.ndarray]: The bid volume as both the minimum and maximum power output of the unit.
@@ -148,6 +180,9 @@ class Demand(SupportsMinMax):
 
         # end includes the end of the last product, to get the last products' start time we deduct the frequency once
         end_excl = end - self.index.freq
+        if market_id is not None:
+            zeros = np.zeros(len(self.index[start:end_excl]))
+            return zeros, zeros.copy()
         bid_volume = (
             self.forecaster.demand.loc[start:end_excl]
             - self.outputs[product_type].loc[start:end_excl]

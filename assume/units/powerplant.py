@@ -285,8 +285,61 @@ class PowerPlant(SupportsMinMax):
 
         return marginal_cost
 
+    def _feasible_bounds(
+        self, start: datetime, end_excl: datetime, market_id: str
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Absolute operating bounds ``(m_t, U_t)`` under *market_id*'s forecast.
+
+        ``m_t`` is the technical minimum plus negative reserve, raised to the heat demand;
+        ``U_t`` is forecast availability times ``max_power`` minus positive reserve.
+        The feasible set is ``{0} U [m_t, U_t]`` (only ``{0}`` if ``U_t < m_t``).
+        """
+        heat_demand = np.asarray(self.outputs["heat"].loc[start:end_excl])
+        capacity_pos = np.asarray(self.outputs["capacity_pos"].loc[start:end_excl])
+        capacity_neg = np.asarray(self.outputs["capacity_neg"].loc[start:end_excl])
+        availability = np.asarray(
+            self.forecaster.get_availability(market_id).loc[start:end_excl]
+        )
+        min_power = np.maximum(self.min_power + capacity_neg, heat_demand)
+        max_power = availability * self.max_power - capacity_pos
+        return min_power, max_power
+
+    def calculate_position_correction(
+        self, start: datetime, end: datetime, market_id: str
+    ) -> np.ndarray:
+        """
+        Forced correction of the held position to the feasible set under *market_id*.
+
+        With ``F = {0} U [m_t, U_t]`` (``F = {0}`` if ``U_t < m_t``), the correction is
+        ``nearest_point(F, P0) - P0`` per hour. Ties between 0 and ``m_t`` prefer staying
+        on (``m_t``). Ramp limits are ignored.
+
+        Args:
+            start (datetime): The start time of the first hour.
+            end (datetime): The end time of the last product (exclusive; last hour is
+                ``end - freq``, as in :meth:`calculate_min_max_power`).
+            market_id (str): The market whose forecasts define the feasible set.
+
+        Returns:
+            np.ndarray: The correction per hour.
+        """
+        end_excl = end - self.index.freq
+        position = np.asarray(self.outputs["energy"].loc[start:end_excl])
+        m, upper = self._feasible_bounds(start, end_excl, market_id)
+        can_run = upper >= m
+        on = np.clip(position, m, np.where(can_run, upper, m))
+        nearest = np.where(
+            ~can_run | (np.abs(position) < np.abs(position - on)), 0.0, on
+        )
+        return nearest - position
+
     def calculate_min_max_power(
-        self, start: datetime, end: datetime, product_type="energy"
+        self,
+        start: datetime,
+        end: datetime,
+        product_type="energy",
+        market_id: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Calculates the additional minimum and maximum power output.
@@ -299,6 +352,11 @@ class PowerPlant(SupportsMinMax):
             start (datetime): The start time of the dispatch.
             end (datetime): The end time of the dispatch (exclusive).
             product_type (str, optional): The product type. Defaults to "energy".
+            market_id (str | None, optional): If given, bounds use this market's availability
+                forecast and are relative to the corrected position ``P_c = P0 + c``
+                (see :meth:`calculate_position_correction`): ``(m_t - P_c, U_t - P_c)``.
+                The minimum may be negative (capacity to reduce) and nothing is clipped;
+                ``(0, 0)`` if the unit cannot run. Without it, the realised availability is used.
 
         Returns:
             tuple[np.ndarray, np.ndarray]: The additional minimum and maximum power output of the unit.
@@ -309,6 +367,17 @@ class PowerPlant(SupportsMinMax):
         """
         # end includes the end of the last product, to get the last products' start time we deduct the frequency once
         end_excl = end - self.index.freq
+
+        if market_id is not None:
+            position = np.asarray(self.outputs["energy"].loc[start:end_excl])
+            corrected = position + self.calculate_position_correction(
+                start, end, market_id
+            )
+            m, upper = self._feasible_bounds(start, end_excl, market_id)
+            cannot_run = upper < m
+            min_power = np.where(cannot_run, 0.0, m - corrected)
+            max_power = np.where(cannot_run, 0.0, upper - corrected)
+            return min_power, max_power
 
         current_power = self.outputs["energy"].loc[start:end_excl]
         heat_demand = self.outputs["heat"].loc[start:end_excl]

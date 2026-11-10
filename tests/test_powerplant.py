@@ -652,6 +652,111 @@ def test_initialising_invalid_powerplants():
         PowerPlant(**d)
 
 
+def _position_plant(p0, upper, min_power=0, cap_neg=0, cap_pos=0):
+    """Two-hour plant (max 1000 MW) holding position p0, ID availability -> upper MW."""
+    index = pd.date_range("2022-01-01", periods=4, freq="h")
+    forecaster = PowerplantForecaster(
+        index,
+        availability=1,
+        availability_forecast={"ID": [upper / 1000] * 4},
+        fuel_prices={"lignite": 10, "co2": 10},
+        market_prices={"EOM": 0},
+    )
+    pp = PowerPlant(
+        id="pos_pp",
+        unit_operator="test_operator",
+        technology="hard coal",
+        bidding_strategies={"EOM": EnergyNaiveStrategy()},
+        index=forecaster.index,
+        max_power=1000,
+        min_power=min_power,
+        efficiency=0.5,
+        fuel_type="lignite",
+        emission_factor=0.5,
+        forecaster=forecaster,
+    )
+    pp.outputs["energy"].loc[index[0] : index[-1]] = p0
+    pp.outputs["capacity_neg"].loc[index[0] : index[-1]] = cap_neg
+    pp.outputs["capacity_pos"].loc[index[0] : index[-1]] = cap_pos
+    return pp, index[:2]  # tests query the first two hours
+
+
+def _correction(pp, index):
+    return pp.calculate_position_correction(
+        index[0], index[-1] + index.freq, market_id="ID"
+    )
+
+
+def test_correction_zero_when_feasible():
+    pp, index = _position_plant(p0=150, upper=220, min_power=80)
+    assert list(_correction(pp, index)) == [0, 0]
+
+
+def test_correction_renewable_overcommitted():
+    pp, index = _position_plant(p0=300, upper=220)
+    assert list(_correction(pp, index)) == [-80, -80]
+
+
+def test_correction_no_bid_when_partially_cleared():
+    pp, index = _position_plant(p0=150, upper=220)
+    assert list(_correction(pp, index)) == [0, 0]
+
+
+def test_correction_whole_position_when_U_below_m():
+    pp, index = _position_plant(p0=300, upper=50, min_power=80)
+    assert list(_correction(pp, index)) == [-300, -300]
+
+
+def test_correction_between_zero_and_min():
+    pp, index = _position_plant(p0=20, upper=100, min_power=40)
+    assert list(_correction(pp, index)) == [20, 20]
+    pp, index = _position_plant(p0=20, upper=30, min_power=40)
+    assert list(_correction(pp, index)) == [-20, -20]
+    # P0 closer to zero than to m: drop to 0
+    pp, index = _position_plant(p0=10, upper=100, min_power=40)
+    assert list(_correction(pp, index)) == [-10, -10]
+
+
+def test_correction_base_unit_default_is_zero():
+    from assume.common.base import BaseUnit
+
+    pp, index = _position_plant(p0=300, upper=220)
+    out = BaseUnit.calculate_position_correction(
+        pp, index[0], index[-1] + index.freq, "ID"
+    )
+    assert list(out) == [0, 0]
+
+
+def test_min_max_market_aware_negative_min():
+    pp, index = _position_plant(p0=150, upper=220, min_power=80)
+    end = index[-1] + index.freq
+    lo, hi = pp.calculate_min_max_power(index[0], end, market_id="ID")
+    # P_c = 150: m - P_c = -70, U - P_c = 70 (no clipping)
+    assert list(lo) == [-70, -70]
+    assert list(hi) == [70, 70]
+
+    # without market_id unchanged: additional range from realised availability
+    lo0, hi0 = pp.calculate_min_max_power(index[0], end)
+    assert list(hi0) == [850, 850]
+    assert list(lo0) == [0, 0]
+
+    # corrected position: P0 300 > U 220 -> P_c 220 -> (80-220, 0)
+    pp, index = _position_plant(p0=300, upper=220, min_power=80)
+    lo, hi = pp.calculate_min_max_power(
+        index[0], index[-1] + index.freq, market_id="ID"
+    )
+    assert list(lo) == [-140, -140]
+    assert list(hi) == [0, 0]
+
+    # cannot run: U < m and P_c = 0
+    pp, index = _position_plant(p0=300, upper=50, min_power=80)
+    lo, hi = pp.calculate_min_max_power(
+        index[0], index[-1] + index.freq, market_id="ID"
+    )
+    assert list(lo) == [0, 0]
+    assert list(hi) == [0, 0]
+
+
 if __name__ == "__main__":
     # run pytest and enable prints
     pytest.main(["-s", __file__])

@@ -271,6 +271,30 @@ class BaseUnit:
         """
         return self.outputs["energy"].loc[start:end]
 
+    def calculate_position_correction(
+        self, start: datetime, end: datetime, market_id: str
+    ) -> np.ndarray:
+        """
+        Forced correction of the held position under *market_id*'s forecast.
+
+        Per hour, the distance from the current position (``outputs["energy"]``) to the
+        nearest point of the feasible set implied by the market's forecast. The default
+        is zeros (no forced correction).
+
+        Args:
+            start (datetime): The start time of the first hour.
+            end (datetime): The end time of the last product (exclusive, like
+                :meth:`SupportsMinMax.calculate_min_max_power`; the last hour is
+                ``end - freq``).
+            market_id (str): The market whose forecasts define the feasible set.
+
+        Returns:
+            np.ndarray: The correction per hour, aligned with the product hours of
+            ``calculate_min_max_power(start, end)``.
+        """
+        end_excl = end - self.index.freq
+        return np.zeros(len(self.index[start:end_excl]))
+
     def get_output_before(self, dt: datetime, product_type: str = "energy") -> float:
         """
         Returns output before the given datetime.
@@ -389,7 +413,11 @@ class SupportsMinMax(BaseUnit):
                 raise ValueError(f"strategy {strategy} is not a MinMaxStrategy!")
 
     def calculate_min_max_power(
-        self, start: datetime, end: datetime, product_type: str = "energy"
+        self,
+        start: datetime,
+        end: datetime,
+        product_type: str = "energy",
+        market_id: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Calculates the min and max power for the given time period.
@@ -398,6 +426,10 @@ class SupportsMinMax(BaseUnit):
             start (datetime.datetime): The start time of the dispatch.
             end (datetime.datetime): The end time of the dispatch.
             product_type (str): The product type of the unit.
+            market_id (str | None): If given, the range is relative to the position after
+                the forced correction under this market's forecast (see
+                :meth:`calculate_position_correction`). Implementations that do not
+                support this ignore it.
 
         Returns:
             tuple[np.ndarray, np.ndarray]: The min and max power for the given time period.
