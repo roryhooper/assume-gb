@@ -605,3 +605,59 @@ def test_get_demand_fallback(shared_FastIndex):
 def test_demand_forecast_validated(shared_FastIndex):
     with pytest.raises(ValidationError):
         DemandForecaster(index=shared_FastIndex, demand_forecast={"DA": 5})
+
+
+def test_naive_price_forecast_differs_per_market(index, shared_FastIndex):
+    """DA uses its own availability/demand forecasts, ID falls back to realised."""
+    registries = get_forecast_registries()
+    strategies = {"DA": EnergyNaiveStrategy(), "ID": EnergyNaiveStrategy()}
+    plants = tuple(
+        PowerPlant(
+            id=f"plant_{cost}",
+            unit_operator="op",
+            technology="gas",
+            bidding_strategies=strategies,
+            max_power=100,
+            min_power=0,
+            efficiency=1,
+            additional_cost=cost,
+            fuel_type="renewable",
+            forecaster=PowerplantForecaster(
+                index=shared_FastIndex,
+                availability=1.0,
+                availability_forecast={"DA": 0.5} if cost == 10 else None,
+                forecast_registries=registries,
+            ),
+        )
+        for cost in (10, 50)
+    )
+    demand = Demand(
+        id="demand",
+        unit_operator="op",
+        technology="inflex_demand",
+        bidding_strategies=strategies,
+        max_power=-1000,
+        min_power=0,
+        price=300,
+        forecaster=DemandForecaster(
+            index=shared_FastIndex,
+            demand=-100,
+            demand_forecast={"DA": -80},
+            forecast_registries=registries,
+        ),
+    )
+    units = (*plants, demand)
+    da = MarketConfig(market_id="DA")
+    id_ = MarketConfig(market_id="ID")
+
+    da_price = calculate_naive_price_inelastic(shared_FastIndex, units, da)
+    id_price = calculate_naive_price_inelastic(shared_FastIndex, units, id_)
+    da_load = calculate_naive_residual_load(shared_FastIndex, units, da)
+    id_load = calculate_naive_residual_load(shared_FastIndex, units, id_)
+
+    # DA: cheap plant 50 MW < demand 80 -> expensive plant sets price
+    # ID: cheap plant 100 MW >= demand 100 -> cheap plant sets price
+    assert list(da_price) == [50] * len(index)
+    assert list(id_price) == [10] * len(index)
+    assert list(da_load) == [80] * len(index)
+    assert list(id_load) == [100] * len(index)

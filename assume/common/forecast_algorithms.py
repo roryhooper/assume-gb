@@ -51,12 +51,19 @@ def is_elastic_demand(unit, market_config=None) -> bool:
     return False
 
 
-def calculate_max_power(units, index=None):
+def calculate_max_power(units, index=None, market_id: str | None = None):
     """
     Returns: max available power: shape (num_units, forecast_len)
+
+    If *market_id* is given, the per-market availability forecast is used where
+    available; otherwise (or as fallback) the realised availability.
     """
     return pd.DataFrame(
-        [unit.max_power * unit.forecaster.availability for unit in units], index=index
+        [
+            unit.max_power * unit.forecaster.get_availability(market_id)
+            for unit in units
+        ],
+        index=index,
     )
 
 
@@ -93,9 +100,11 @@ def sort_units(units: list[BaseUnit], market_id: str | None = None):
 def calculate_sum_demand(
     demand_units: list[Demand],
     exchange_units: list[Exchange],
+    market_id: str | None = None,
 ):
     """
     Returns summed demand at every timestep (incl. imports and exports)
+    Uses the per-market demand forecast for *market_id* if present, else realised.
     Shape: (num_timesteps,)
     """
     sum_demand = np.zeros(len(demand_units[0].forecaster.index))
@@ -103,7 +112,7 @@ def calculate_sum_demand(
     sum_demand += abs(
         np.array(
             [
-                unit.forecaster.demand
+                unit.forecaster.get_demand(market_id)
                 for unit in demand_units
                 if not is_elastic_demand(unit)
             ]
@@ -173,12 +182,15 @@ def calculate_naive_price_inelastic(
 
     # Compute available power for each unit at each time step.
     # shape: (index_len, num_pp_units)
-    power = calculate_max_power(powerplants_units).T.set_index(index)
+    power = calculate_max_power(
+        powerplants_units, market_id=config.market_id
+    ).T.set_index(index)
 
     # Process the demand.
     # Filter demand units with a bidding strategy and sum their forecasts for each time step.
     sum_demand = pd.DataFrame(
-        calculate_sum_demand(demand_units, exchange_units), index=index
+        calculate_sum_demand(demand_units, exchange_units, config.market_id),
+        index=index,
     )
 
     # 3. Merit-order dispatch
@@ -280,12 +292,15 @@ def calculate_naive_price_elastic(
 
     # Compute available power for each unit at each time step.
     # shape: (index_len, num_pp_units)
-    power = calculate_max_power(powerplants_units).T.set_index(index)
+    power = calculate_max_power(
+        powerplants_units, market_id=config.market_id
+    ).T.set_index(index)
 
     # Process the inelastic demand.
     # Filter demand units with a bidding strategy and sum their forecasts for each time step.
     sum_demand = pd.DataFrame(
-        calculate_sum_demand(demand_units, exchange_units), index=index
+        calculate_sum_demand(demand_units, exchange_units, config.market_id),
+        index=index,
     )
 
     # 3. Pay-as-clear dispatch
@@ -425,13 +440,15 @@ def calculate_naive_residual_load(
         units, config.market_id
     )
 
-    sum_demand = calculate_sum_demand(demand_units, exchange_units)
+    sum_demand = calculate_sum_demand(demand_units, exchange_units, config.market_id)
 
     # shape: (num_pp_units, index_len) -> (index_len)
     renewable_units = [
         unit for unit in powerplants_units if is_renewable(unit.technology)
     ]
-    vre_feed_in_df = calculate_max_power(renewable_units).sum(axis=0)
+    vre_feed_in_df = calculate_max_power(
+        renewable_units, market_id=config.market_id
+    ).sum(axis=0)
 
     if vre_feed_in_df.empty:
         vre_feed_in_df = 0
