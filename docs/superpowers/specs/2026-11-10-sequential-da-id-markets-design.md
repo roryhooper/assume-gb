@@ -20,8 +20,10 @@ The design reuses existing ASSUME concepts (`market_id`-keyed forecasts, `output
 
 ### 1.1 Requirements (from the user)
 
-- **DA auction:** opens 09:00; 24 × 1h products for 00:00–23:00 of the next day; pay-as-clear.
-- **ID auction:** opens 22:00; 24 × 1h products for the same delivery day; pay-as-clear.
+- Both auctions trade the **same delivery day D**, and both are held on the day before (D−1):
+  - **DA auction:** opens 09:00 on D−1; 24 × 1h products covering 00:00–23:00 of D; pay-as-clear.
+  - **ID auction:** opens 22:00 on D−1; the same 24 × 1h products covering 00:00–23:00 of D; pay-as-clear.
+  - ID therefore trades changes to the positions taken in DA for the same hours, two hours before delivery begins.
 - **Run length:** one week of delivery.
 - **No balancing or imbalance market in v1.** The design must allow one to be added later, in which agents may *choose* to be out of balance when that pays (see §10).
 - **Any unit type** must be able to take part in this market setup.
