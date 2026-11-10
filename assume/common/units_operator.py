@@ -8,6 +8,7 @@ from datetime import datetime
 from itertools import groupby
 from operator import itemgetter
 
+import numpy as np
 from mango import Role, create_acl, sender_addr
 from mango.messages.message import Performatives
 
@@ -382,8 +383,12 @@ class UnitsOperator(Role):
             start = unit.index.align_up(last)
             if start == last:
                 start += unit.index.freq
+            # snapshot the market position before physical limits are applied
+            position = np.array(unit.outputs["energy"].loc[start:now], dtype=float)
             current_dispatch = unit.execute_current_dispatch(start, now)
             end = now
+            physical = np.asarray(unit.outputs["energy"].loc[start:now], dtype=float)
+            unit.outputs["energy_deviation"].loc[start:now] = physical - position
             dispatch = {"power": current_dispatch}
             unit.calculate_generation_cost(start, now, "energy")
             valid_outputs = [
@@ -392,6 +397,8 @@ class UnitsOperator(Role):
                 "generation_costs",
                 "total_costs",
                 "heat",
+                "energy_profit",
+                "deviation",
             ]
 
             for key in unit.outputs.keys():
@@ -403,6 +410,19 @@ class UnitsOperator(Role):
             unit_dispatch.append(dispatch)
 
         return market_dispatch, unit_dispatch
+
+    async def on_stop(self):
+        """
+        Flushes the dispatch of the final delivery period when the simulation ends.
+
+        Without this, the last delivery day is never executed or exported, as no
+        later market feedback triggers it.
+        """
+        for product_type in {
+            market.product_type for market in self.registered_markets.values()
+        } | set(self.valid_orders.keys()):
+            self.write_actual_dispatch(product_type)
+        await super().on_stop()
 
     def write_actual_dispatch(self, product_type: str) -> None:
         """

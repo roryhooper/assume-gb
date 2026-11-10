@@ -145,6 +145,123 @@ async def test_get_actual_dispatch(units_operator: UnitsOperator):
     assert len(market_dispatch) == 0
 
 
+@pytest.fixture
+async def pp_operator() -> UnitsOperator:
+    marketconfig = MarketConfig(
+        market_id="DA",
+        opening_hours=rr.rrule(rr.HOURLY, dtstart=start, until=end),
+        opening_duration=rd(hours=1),
+        market_mechanism="pay_as_clear",
+        market_products=[MarketProduct(rd(hours=1), 1, rd(hours=1))],
+    )
+    clock = ExternalClock(0)
+    container = create_tcp_container(addr=("0.0.0.0", 9099), clock=clock)
+    units_agent = RoleAgent()
+    units_role = UnitsOperator(available_markets=[marketconfig])
+    units_agent.add_role(units_role)
+    agent_id = container.register(units_agent)
+
+    index = FastIndex(start=start, end=end + pd.Timedelta(hours=4), freq="1h")
+    forecaster = PowerplantForecaster(
+        index,
+        availability=0.8,
+        fuel_prices={"lignite": 10, "co2": 10},
+        market_prices={"DA": 50},
+    )
+    unit = PowerPlant(
+        "testpp",
+        unit_operator=agent_id,
+        technology="hard coal",
+        bidding_strategies={"DA": EnergyNaiveStrategy()},
+        index=index,
+        max_power=100,
+        min_power=0,
+        efficiency=0.5,
+        fuel_type="lignite",
+        emission_factor=0.5,
+        forecaster=forecaster,
+    )
+    units_role.add_unit(unit)
+    clock.set_time(datetime2timestamp(start))
+
+    async with activate(container):
+        yield units_role
+        clock.set_time(datetime2timestamp(end))
+        await tasks_complete_or_sleeping(container)
+
+
+def _set_position(unit, t, volume):
+    unit.outputs["energy"].at[t] = volume
+    unit.outputs["energy_DA"].at[t] = volume
+    unit.outputs["energy_profit_DA"].at[t] = 5.0
+    unit.outputs["profit"].at[t] = 7.0
+
+
+async def test_energy_deviation_written(pp_operator: UnitsOperator):
+    unit = pp_operator.units["testpp"]
+    clock = pp_operator.context.context.clock
+    t1 = start + rd(hours=1)
+    _set_position(unit, t1, 100)
+
+    last = clock.time
+    clock.set_time(clock.time + 3600)
+    pp_operator.get_actual_dispatch("energy", last)
+
+    # availability caps physical output at 80 -> deviation is 80 - 100
+    assert unit.outputs["energy"].at[t1] == 80
+    assert unit.outputs["energy_deviation"].at[t1] == -20
+    # the market position itself is untouched
+    assert unit.outputs["energy_DA"].at[t1] == 100
+
+
+async def test_dispatch_export_includes_profit_and_deviation_not_strategy_profit(
+    pp_operator: UnitsOperator,
+):
+    unit = pp_operator.units["testpp"]
+    clock = pp_operator.context.context.clock
+    _set_position(unit, start + rd(hours=1), 100)
+
+    last = clock.time
+    clock.set_time(clock.time + 3600)
+    _, unit_dispatch = pp_operator.get_actual_dispatch("energy", last)
+
+    keys = set(unit_dispatch[0].keys())
+    assert "energy_profit_DA" in keys
+    assert "energy_deviation" in keys
+    assert "profit" not in keys
+
+
+async def test_on_stop_flushes_final_dispatch(pp_operator: UnitsOperator):
+    unit = pp_operator.units["testpp"]
+    clock = pp_operator.context.context.clock
+    t1 = start + rd(hours=1)
+    pp_operator.valid_orders["energy"].append(
+        {
+            "start_time": t1,
+            "end_time": t1 + rd(hours=1),
+            "volume": 100,
+            "accepted_volume": 100,
+            "price": 10,
+            "accepted_price": 10,
+            "agent_addr": "x",
+            "market_id": "DA",
+            "unit_id": "testpp",
+            "only_hours": None,
+        }
+    )
+    _set_position(unit, t1, 100)
+    clock.set_time(clock.time + 2 * 3600)
+
+    sent = []
+    pp_operator.context.schedule_instant_message = lambda **kw: sent.append(kw)
+    pp_operator.context.data["output_agent_addr"] = "out"
+
+    await pp_operator.on_stop()
+
+    assert any(m["content"]["type"] == "unit_dispatch" for m in sent)
+    assert unit.outputs["energy_deviation"].at[t1] == -20
+
+
 def test_participate():
     """
     Tests that an operator without units does not participate.
