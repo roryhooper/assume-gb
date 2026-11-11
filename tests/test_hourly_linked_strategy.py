@@ -186,8 +186,9 @@ def test_off_case_start_and_flex_bids():
     assert s_bid["bid_id"] == "ccgt_S_20230701T10"
     assert s_bid["volume"] == {t: 40}
     assert s_bid["min_acceptance_ratio"] == 1
-    op_time = pp.get_operation_time(t)
-    assert op_time < 0
+    # off since the start of the index: the start is priced with the full down time
+    op_time = -pp.get_downtime(t)
+    assert op_time == -10
     assert s_bid["price"] == pytest.approx(
         calculate_EOM_price_if_off(
             unit=pp,
@@ -604,3 +605,97 @@ def test_clearing_round_trip_never_below_min_load(start_cost):
         assert net[("ccgt", t11)] == pytest.approx(60, abs=1e-4)
     else:
         assert net[("ccgt", t11)] == pytest.approx(70, abs=1e-4)
+
+
+def _hard_coal_example_unit():
+    """The hard coal unit of example_01k on its lead day plus delivery week."""
+    index = pd.date_range("2019-03-17", periods=192, freq="h")
+    strategy = EnergyHeuristicFlexableHourlyLinkedStrategy()
+    forecaster = PowerplantForecaster(
+        index,
+        availability=1,
+        fuel_prices={"hard coal": 8.16, "co2": 21.9},
+        market_prices={"DA": 40},
+    )
+    pp = PowerPlant(
+        id="Hard coal",
+        unit_operator="op",
+        technology="hard coal",
+        bidding_strategies={"DA": strategy},
+        index=forecaster.index,
+        max_power=321,
+        min_power=131.61,
+        efficiency=0.41,
+        additional_cost=1.3,
+        fuel_type="hard coal",
+        emission_factor=0.335,
+        hot_start_cost=32.7,
+        warm_start_cost=51.6,
+        cold_start_cost=69.9,
+        min_operating_time=7,
+        min_down_time=6,
+        ramp_up=221.49,
+        ramp_down=221.49,
+        downtime_hot_start=8,
+        downtime_warm_start=48,
+        partial_load_eff=True,
+        forecaster=forecaster,
+    )
+    return pp, strategy
+
+
+def test_start_priced_with_uncapped_downtime_like_accounting():
+    """After the 24 h lead day the start is a warm start, both in the S bid price
+    and in the start-up cost the accounting books (not a hot start from the
+    look-back of get_operation_time, which is capped at max(min up, min down))."""
+    pp, strategy = _hard_coal_example_unit()
+    index = pp.index
+    t = index[24]
+    min_load = pp.min_power
+    assert pp.get_downtime(t) == 24
+    assert pp.get_starting_costs(-24) == pp.warm_start_cost
+
+    bids = strategy.calculate_bids(
+        pp,
+        _market_config("DA"),
+        [(index[h], index[h] + HOUR, None) for h in range(24, 48)],
+    )
+    s_bid = _bid(bids, bid_id="Hard coal_S_20190318T00")
+    warm_price = calculate_EOM_price_if_off(
+        unit=pp,
+        marginal_cost_inflex=pp.calculate_marginal_cost(t, min_load),
+        bid_quantity_inflex=min_load,
+        op_time=-pp.get_downtime(t),
+    )
+    assert s_bid["price"] == pytest.approx(warm_price)
+    # the start-up cost in that price is the one the accounting books for this start
+    markup = (warm_price - pp.calculate_marginal_cost(t, min_load)) * min_load
+    pp.outputs["energy"].at[t] = min_load
+    booked = pp.calculate_operating_cost(t, t)[0] - pp.calculate_cost(t, min_load)
+    assert markup * pp.min_operating_time == pytest.approx(booked)
+    assert booked == pytest.approx(pp.warm_start_cost)
+
+
+def test_long_downtime_keeps_min_down_suppression():
+    """The uncapped down time is beyond -min_down_time, so a long-off unit bids,
+    and a short off-period still blocks the restart."""
+    pp, strategy = _hard_coal_example_unit()
+    index = pp.index
+    for h in range(24, 30):
+        pp.outputs["energy"].at[index[h]] = 200
+    # off from 30: min down time 6 -> hours 31..35 blocked, 36 allowed
+    bids = strategy.calculate_bids(
+        pp,
+        _market_config("DA"),
+        [(index[h], index[h] + HOUR, None) for h in range(31, 38)],
+    )
+    assert {b["start_time"] for b in bids} == {index[36], index[37]}
+    s_36 = _bid(bids, bid_id="Hard coal_S_20190318T12")
+    assert s_36["price"] == pytest.approx(
+        calculate_EOM_price_if_off(
+            unit=pp,
+            marginal_cost_inflex=pp.calculate_marginal_cost(index[36], pp.min_power),
+            bid_quantity_inflex=pp.min_power,
+            op_time=-6,
+        )
+    )

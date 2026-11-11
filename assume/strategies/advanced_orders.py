@@ -424,6 +424,9 @@ class EnergyHeuristicFlexableHourlyLinkedStrategy(EnergyHeuristicFlexableStrateg
       all-or-nothing) priced at the min-load cost with flexable's start-up markup or
       stay-on discount, and a flexible bid **F** (``U - m``, linked to S) at the chord
       cost ``calculate_chord_cost(m, U)``. Nothing while the minimum down time runs.
+      The start-up cost in the markup uses the full down time before the hour
+      (:meth:`SupportsMinMax.get_downtime`), the same down time with which the
+      accounting books the start-up.
     - **On** (``P_c >= m``): the hour's switch prices from :func:`determine_on_case`
       decide between
 
@@ -488,6 +491,10 @@ class EnergyHeuristicFlexableHourlyLinkedStrategy(EnergyHeuristicFlexableStrateg
 
         previous_power = unit.get_output_before(first_start)
         op_time = unit.get_operation_time(first_start)
+        if op_time < 0:
+            # get_operation_time looks back at most max(min up, min down) steps;
+            # price start-ups with the full down time, as the accounting books them
+            op_time = min(op_time, -unit.get_downtime(first_start))
 
         for product, lo, hi, c in zip(product_tuples, min_add, max_add, correction):
             start, end, only_hours = product
