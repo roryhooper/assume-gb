@@ -696,6 +696,100 @@ def test_complex_clearing_LB():
     assert rejected_orders == []
 
 
+def _two_hour_config():
+    market_config = simple_dayahead_auction_config
+    market_config.market_products = [
+        MarketProduct(timedelta(hours=1), 2, timedelta(hours=1))
+    ]
+    market_config.additional_fields = [
+        "bid_type",
+        "min_acceptance_ratio",
+        "parent_bid_id",
+    ]
+    next_opening = market_config.opening_hours.after(datetime(2005, 6, 1))
+    products = get_available_products(market_config.market_products, next_opening)
+    assert len(products) == 2
+    return market_config, products
+
+
+def test_child_surplus_uses_child_volume():
+    """
+    A linked child's surplus must be valued with the child's own volume.
+
+    Clearing price is 100 in both hours (set by gen1). The parent BB (50 MW in
+    each hour, price 105) loses 5 * 100 MWh = 500 at that price. The child LB
+    (20 MW in hour 0 only, price 70) earns (100 - 70) * 20 = 600 > 500, so the
+    child saves its parent and both stay accepted. If the child's cost term used
+    the parent's volume (100 MWh) the child surplus would be 2000 - 7000 < 0 and
+    the parent would be wrongly removed.
+    """
+    market_config, products = _two_hour_config()
+    orderbook = []
+    orderbook = extend_orderbook(products, -500, 3000, orderbook)
+    orderbook = extend_orderbook(products, 1000, 100, orderbook)
+    orderbook = extend_orderbook(
+        products, 50, 105, orderbook, bid_type="BB", min_acceptance_ratio=1
+    )
+    parent = orderbook[-1]
+    child = extend_orderbook(
+        products[:1],
+        20,
+        70,
+        [],
+        bid_type="LB",
+        min_acceptance_ratio=1,
+        parent_bid_id=parent["bid_id"],
+    )[0]
+    child["bid_id"] = "child_bid"
+    orderbook.append(child)
+
+    mr = ComplexClearingRole(market_config)
+    accepted_orders, rejected_orders, meta, flows = mr.clear(orderbook, products)
+
+    assert math.isclose(meta[0]["price"], 100, abs_tol=eps)
+    assert math.isclose(meta[1]["price"], 100, abs_tol=eps)
+    accepted_ids = {o["bid_id"] for o in accepted_orders}
+    assert parent["bid_id"] in accepted_ids
+    assert child["bid_id"] in accepted_ids
+    assert rejected_orders == []
+
+
+def test_one_sided_hour_has_defined_price():
+    """
+    Hour 1 has supply only (no demand). clear() must still return a numeric price
+    for it and no all-or-nothing block may be partially accepted.
+
+    Observed behaviour: nothing trades in hour 1 (supply and demand volume 0)
+    and the balance-constraint dual returned for it is 50, i.e. neither the
+    generator price (100), the block price (75) nor 0. It is the HiGHS dual of a
+    degenerate, non-binding constraint and so solver-dependent: only that the
+    price is defined and finite is pinned, not its value. Hour 0 clears at 100.
+    """
+    market_config, products = _two_hour_config()
+    orderbook = []
+    # demand only in hour 0
+    orderbook = extend_orderbook(products[:1], -100, 3000, orderbook)
+    orderbook = extend_orderbook(products, 1000, 100, orderbook)
+    orderbook = extend_orderbook(
+        products, 100, 75, orderbook, bid_type="BB", min_acceptance_ratio=1
+    )
+    block = orderbook[-1]
+
+    mr = ComplexClearingRole(market_config)
+    accepted_orders, rejected_orders, meta, flows = mr.clear(orderbook, products)
+
+    assert len(meta) == 2
+    assert math.isclose(meta[0]["price"], 100, abs_tol=eps)
+    for m in meta:
+        assert math.isfinite(m["price"])
+    for o in accepted_orders + rejected_orders:
+        if o["bid_id"] == block["bid_id"]:
+            for t, v in o["accepted_volume"].items():
+                assert math.isclose(v, 0, abs_tol=eps) or math.isclose(
+                    v, block["volume"][t], abs_tol=eps
+                )
+
+
 if __name__ == "__main__":
     pass
     # from assume.common.utils import plot_orderbook

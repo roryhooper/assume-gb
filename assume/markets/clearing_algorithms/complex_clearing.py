@@ -700,7 +700,7 @@ def calculate_order_surplus(
                     market_clearing_prices[child_order["node"]][t] * v
                     for t, v in child_order["volume"].items()
                 )
-                - child_order["price"] * bid_volume
+                - child_order["price"] * sum(child_order["volume"].values())
             ) * pyo.value(instance.xb[child_order["bid_id"]])
             if child_surplus > 0:
                 order_surplus += child_surplus
