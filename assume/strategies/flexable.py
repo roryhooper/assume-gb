@@ -90,7 +90,9 @@ class EnergyHeuristicFlexableStrategy(MinMaxStrategy):
                 op_time, previous_power, min_power, current_power
             )
 
-            bid_quantity_inflex = min_power
+            # with a prior position the additional minimum can be negative;
+            # never offer a buy, and never exceed max_power in total
+            bid_quantity_inflex = max(min_power, 0)
 
             marginal_cost_inflex = unit.calculate_marginal_cost(
                 start, current_power + bid_quantity_inflex
@@ -179,46 +181,14 @@ class EnergyHeuristicFlexableStrategy(MinMaxStrategy):
             which is the loss of income we have because we are not running at full power.
             The regret is the opportunity cost.
             Because the regret_scale is set to 0 the reward equals the profit.
-            The profit is the income we have from the accepted bids.
+            The profit is the accumulated cashflow (all markets) minus costs.
             The total costs are the running costs and the start-up costs.
 
         """
         product_type = marketconfig.product_type
         products_index = get_products_index(orderbook)
 
-        # Initialize intermediate results as numpy arrays for better performance
-        profit = np.zeros(len(products_index))
         costs = np.zeros(len(products_index))
-
-        # Map products_index to their positions for faster updates
-        index_map = {time: i for i, time in enumerate(products_index)}
-
-        for order in orderbook:
-            start = order["start_time"]
-            end_excl = order["end_time"] - unit.index.freq
-
-            order_times = unit.index[start:end_excl]
-            accepted_volume = order.get("accepted_volume", 0)
-            accepted_price = order.get("accepted_price", 0)
-
-            for start in order_times:
-                idx = index_map.get(start)
-
-                marginal_cost = unit.calculate_marginal_cost(
-                    start, unit.outputs[product_type].at[start]
-                )
-
-                if isinstance(accepted_volume, dict):
-                    accepted_volume = accepted_volume.get(start, 0)
-                else:
-                    accepted_volume = accepted_volume
-
-                if isinstance(accepted_price, dict):
-                    accepted_price = accepted_price.get(start, 0)
-                else:
-                    accepted_price = accepted_price
-
-                profit[idx] += accepted_price * accepted_volume
 
         # consideration of start-up costs
         for i, start in enumerate(products_index):
@@ -232,7 +202,11 @@ class EnergyHeuristicFlexableStrategy(MinMaxStrategy):
                 start_up_cost = unit.get_starting_costs(op_time)
                 costs[i] += start_up_cost
 
-        profit -= costs
+        # profit from the accumulated cashflow of all markets (not only this orderbook)
+        cashflow = np.array(
+            [unit.outputs[f"{product_type}_cashflow"].at[t] for t in products_index]
+        )
+        profit = cashflow - costs
 
         # store results in unit outputs which are written to database by unit operator
         unit.outputs["profit"].loc[products_index] = profit
