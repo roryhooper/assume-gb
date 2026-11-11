@@ -661,3 +661,61 @@ def test_naive_price_forecast_differs_per_market(index, shared_FastIndex):
     assert list(id_price) == [10] * len(index)
     assert list(da_load) == [80] * len(index)
     assert list(id_load) == [100] * len(index)
+
+
+def test_naive_price_with_partial_load_eff_unit():
+    """A partial-load unit has no precomputed marginal_cost series; the merit
+    order uses its full-load cost (the curves have no efficiency loss at full load)."""
+    index = pd.date_range("2022-01-01", periods=3, freq="h")
+
+    def gas_plant(name, efficiency, partial_load_eff):
+        forecaster = PowerplantForecaster(
+            index,
+            availability=1,
+            fuel_prices={"natural gas": 25, "co2": 25},
+            market_prices={"EOM": 0},
+        )
+        return PowerPlant(
+            id=name,
+            unit_operator="op",
+            technology="combined cycle gas turbine",
+            bidding_strategies={"EOM": EnergyNaiveStrategy()},
+            index=forecaster.index,
+            max_power=100,
+            min_power=40,
+            efficiency=efficiency,
+            fuel_type="natural gas",
+            emission_factor=0.2,
+            forecaster=forecaster,
+            partial_load_eff=partial_load_eff,
+        )
+
+    cheap = gas_plant("cheap", 0.6, partial_load_eff=True)
+    dear = gas_plant("dear", 0.5, partial_load_eff=False)
+    demand_forecaster = DemandForecaster(index, demand=-150)
+    demand = Demand(
+        id="demand",
+        unit_operator="op",
+        technology="inflex_demand",
+        bidding_strategies={"EOM": EnergyNaiveStrategy()},
+        index=demand_forecaster.index,
+        max_power=-150,
+        min_power=0,
+        price=3000,
+        forecaster=demand_forecaster,
+    )
+    market_config = MarketConfig(market_id="EOM")
+
+    price = calculate_naive_price_inelastic(
+        demand_forecaster.index, (cheap, dear, demand), market_config
+    )
+    # 150 MW needs both plants; the dearer one (30 / 0.5 = 60) sets the price
+    assert list(price) == pytest.approx([60.0] * 3)
+
+    # with the partial-load unit marginal, its full-load cost sets the price
+    price = calculate_naive_price_inelastic(
+        demand_forecaster.index,
+        (gas_plant("cheap2", 0.6, True), gas_plant("other", 0.6, True), demand),
+        market_config,
+    )
+    assert list(price) == pytest.approx([30 / 0.6] * 3)

@@ -51,6 +51,18 @@ def is_elastic_demand(unit, market_config=None) -> bool:
     return False
 
 
+def _merit_order_cost(unit):
+    """
+    Marginal cost series used for the merit order.
+
+    Units with partial-load efficiency have no precomputed ``marginal_cost``; their
+    full-load cost (no efficiency loss at full load) is used instead.
+    """
+    if unit.marginal_cost is None:
+        return unit.calc_simple_marginal_cost()
+    return unit.marginal_cost
+
+
 def calculate_max_power(units, index=None, market_id: str | None = None):
     """
     Returns: max available power: shape (num_units, forecast_len)
@@ -177,7 +189,7 @@ def calculate_naive_price_inelastic(
     # The resulting DataFrame has rows = time steps and columns = units.
     # shape: (index_len, num_pp_units)
     marginal_costs = pd.DataFrame(
-        [unit.marginal_cost for unit in powerplants_units]
+        [_merit_order_cost(unit) for unit in powerplants_units]
     ).T.set_index(index)
 
     # Compute available power for each unit at each time step.
@@ -287,7 +299,7 @@ def calculate_naive_price_elastic(
     # The resulting DataFrame has rows = time steps and columns = units.
     # shape: (index_len, num_pp_units)
     marginal_costs = pd.DataFrame(
-        [unit.marginal_cost for unit in powerplants_units]
+        [_merit_order_cost(unit) for unit in powerplants_units]
     ).T.set_index(index)
 
     # Compute available power for each unit at each time step.

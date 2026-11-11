@@ -110,7 +110,8 @@ def test_init_function(power_plant_1, power_plant_2, power_plant_3):
     ).all()
 
     assert (power_plant_2.marginal_cost == pd.Series(40, index)).all()
-    assert (power_plant_3.marginal_cost == pd.Series(40, index)).all()
+    # partial-load efficiency: no precomputed series, cost depends on the load
+    assert power_plant_3.marginal_cost is None
 
 
 def test_reset_function(power_plant_1):
@@ -755,6 +756,132 @@ def test_min_max_market_aware_negative_min():
     )
     assert list(lo) == [0, 0]
     assert list(hi) == [0, 0]
+
+
+def _ccgt_curve_loss(ratio):
+    """Efficiency loss of the CCGT part-load curve (spec section 5.6)."""
+    return (
+        0.178749 * ratio**4
+        - 0.653192 * ratio**3
+        + 0.964704 * ratio**2
+        - 0.805845 * ratio
+        + 0.315584
+    )
+
+
+def _gas_plant(
+    technology="combined cycle gas turbine",
+    fuel_type="natural gas",
+    partial_load_eff=True,
+):
+    """100 MW gas plant: fuel 25, co2 25, emission factor 0.2, efficiency 0.55."""
+    index = pd.date_range("2022-01-01", periods=4, freq="h")
+    forecaster = PowerplantForecaster(
+        index,
+        availability=1,
+        fuel_prices={fuel_type: 25, "co2": 25},
+        market_prices={"EOM": 0},
+    )
+    return PowerPlant(
+        id="gas_pp",
+        unit_operator="test_operator",
+        technology=technology,
+        bidding_strategies={"EOM": EnergyNaiveStrategy()},
+        index=forecaster.index,
+        max_power=100,
+        min_power=40,
+        efficiency=0.55,
+        fuel_type=fuel_type,
+        emission_factor=0.2,
+        forecaster=forecaster,
+        partial_load_eff=partial_load_eff,
+    )
+
+
+def test_partial_load_eff_activates_curve():
+    pp = _gas_plant()
+    t = pp.index[0]
+    assert pp.marginal_cost is None
+    # full load: no efficiency loss -> (25 + 25 * 0.2) / 0.55
+    assert pp.calculate_marginal_cost(t, 100) == pytest.approx(30 / 0.55)
+    assert pp.calculate_marginal_cost(t, 100) == pytest.approx(54.545, abs=1e-3)
+    # min load is more expensive per MWh
+    mc_min = pp.calculate_marginal_cost(t, 40)
+    assert mc_min == pytest.approx(30 / (0.55 - _ccgt_curve_loss(0.4)))
+    assert mc_min == pytest.approx(68.24, abs=1e-2)
+    assert mc_min > pp.calculate_marginal_cost(t, 70) > 54.545
+
+    # without partial_load_eff the cost is flat
+    flat = _gas_plant(partial_load_eff=False)
+    assert flat.marginal_cost is not None
+    assert flat.calculate_marginal_cost(t, 40) == pytest.approx(30 / 0.55)
+    assert flat.calculate_marginal_cost(t, 100) == pytest.approx(30 / 0.55)
+
+
+def test_curve_selected_by_technology_then_fuel():
+    t = datetime(2022, 1, 1)
+    # gas plant whose fuel is "natural gas": the curve comes from the technology
+    ccgt = _gas_plant(technology="combined cycle gas turbine")
+    assert ccgt.calculate_marginal_cost(t, 40) == pytest.approx(
+        30 / (0.55 - _ccgt_curve_loss(0.4))
+    )
+
+    ocgt = _gas_plant(technology="open cycle gas turbine")
+    loss = (
+        0.485049 * 0.4**4
+        - 1.540723 * 0.4**3
+        + 1.899607 * 0.4**2
+        - 1.251502 * 0.4
+        + 0.407569
+    )
+    assert ocgt.calculate_marginal_cost(t, 40) == pytest.approx(30 / (0.55 - loss))
+
+    coal_loss = (
+        0.095859 * 0.4**4
+        - 0.356010 * 0.4**3
+        + 0.532948 * 0.4**2
+        - 0.447059 * 0.4
+        + 0.174262
+    )
+    # technology "hard coal" with an unrelated fuel name
+    coal_tech = _gas_plant(technology="hard coal", fuel_type="coal")
+    assert coal_tech.calculate_marginal_cost(t, 40) == pytest.approx(
+        30 / (0.55 - coal_loss)
+    )
+    # fuel-type fallback (today's behaviour) for lignite
+    lignite = _gas_plant(technology="steam turbine", fuel_type="lignite")
+    assert lignite.calculate_marginal_cost(t, 40) == pytest.approx(
+        30 / (0.55 - coal_loss)
+    )
+    # no curve: flat
+    other = _gas_plant(technology="gas engine", fuel_type="natural gas")
+    assert other.calculate_marginal_cost(t, 40) == pytest.approx(30 / 0.55)
+
+
+def test_chord_cost_matches_hand_value():
+    pp = _gas_plant()
+    t = pp.index[0]
+    cost_40 = 40 * 30 / (0.55 - _ccgt_curve_loss(0.4))
+    cost_70 = 70 * 30 / (0.55 - _ccgt_curve_loss(0.7))
+    cost_100 = 100 * 30 / 0.55
+
+    assert pp.calculate_cost(t, 40) == pytest.approx(cost_40)
+    assert pp.calculate_cost(t, 100) == pytest.approx(cost_100)
+    assert pp.calculate_cost(t, 0) == 0.0
+    assert pp.calculate_cost(t, -5) == 0.0
+
+    assert pp.calculate_chord_cost(t, 40, 100) == pytest.approx(
+        (cost_100 - cost_40) / 60
+    )
+    # spec reference values: p_mU ~ 45.4, chord 40->70 ~ 47.1, chord 70->100 ~ 43.7
+    assert pp.calculate_chord_cost(t, 40, 100) == pytest.approx(45.4, abs=0.05)
+    assert pp.calculate_chord_cost(t, 40, 70) == pytest.approx(47.1, abs=0.05)
+    assert pp.calculate_chord_cost(t, 70, 100) == pytest.approx(43.7, abs=0.05)
+    assert pp.calculate_chord_cost(t, 70, 40) == pytest.approx((cost_70 - cost_40) / 30)
+    # degenerate chord falls back to the marginal (average) cost at that point
+    assert pp.calculate_chord_cost(t, 70, 70) == pytest.approx(
+        pp.calculate_marginal_cost(t, 70)
+    )
 
 
 if __name__ == "__main__":

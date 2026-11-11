@@ -165,7 +165,11 @@ class PowerPlant(SupportsMinMax):
             self.index.freq / timedelta(hours=1)
         )
 
-        self.marginal_cost = self.calc_simple_marginal_cost()
+        # with partial-load efficiency the cost depends on the load, so it is computed
+        # on demand by calc_marginal_cost_with_partial_eff
+        self.marginal_cost = (
+            None if partial_load_eff else self.calc_simple_marginal_cost()
+        )
 
     def execute_current_dispatch(
         self,
@@ -244,7 +248,17 @@ class PowerPlant(SupportsMinMax):
 
         capacity_ratio = power_output / self.max_power
 
-        if self.fuel_type in ["lignite", "hard coal"]:
+        # select the efficiency-loss curve by technology first, then by fuel type
+        curve = None
+        for name in (self.technology, self.fuel_type):
+            if name in ("lignite", "hard coal"):
+                curve = "coal"
+            elif name in ("combined cycle gas turbine", "open cycle gas turbine"):
+                curve = name
+            if curve is not None:
+                break
+
+        if curve == "coal":
             eta_loss = (
                 0.095859 * (capacity_ratio**4)
                 - 0.356010 * (capacity_ratio**3)
@@ -253,7 +267,7 @@ class PowerPlant(SupportsMinMax):
                 + 0.174262
             )
 
-        elif self.fuel_type == "combined cycle gas turbine":
+        elif curve == "combined cycle gas turbine":
             eta_loss = (
                 0.178749 * (capacity_ratio**4)
                 - 0.653192 * (capacity_ratio**3)
@@ -262,7 +276,7 @@ class PowerPlant(SupportsMinMax):
                 + 0.315584
             )
 
-        elif self.fuel_type == "open cycle gas turbine":
+        elif curve == "open cycle gas turbine":
             eta_loss = (
                 0.485049 * (capacity_ratio**4)
                 - 1.540723 * (capacity_ratio**3)
@@ -445,6 +459,47 @@ class PowerPlant(SupportsMinMax):
                 power_output=power,
                 timestep=start,
             )
+
+    def calculate_cost(self, start: datetime, power: float) -> float:
+        """
+        Running cost of producing *power* in the hour starting at *start*.
+
+        With partial-load efficiency :meth:`calculate_marginal_cost` returns the
+        average cost at *power*, so this is the total hourly cost at that load.
+
+        Args:
+            start (datetime.datetime): The start time of the hour.
+            power (float): The power output.
+
+        Returns:
+            float: ``power * calculate_marginal_cost(start, power)``; 0 if ``power <= 0``.
+        """
+        if power <= 0:
+            return 0.0
+        return float(power * self.calculate_marginal_cost(start, power))
+
+    def calculate_chord_cost(
+        self, start: datetime, p_from: float, p_to: float
+    ) -> float:
+        """
+        Average cost per MWh of moving the output from *p_from* to *p_to*.
+
+        ``(cost(p_to) - cost(p_from)) / (p_to - p_from)``; if both are equal the
+        marginal (average) cost at that point is returned.
+
+        Args:
+            start (datetime.datetime): The start time of the hour.
+            p_from (float): The output before the change.
+            p_to (float): The output after the change.
+
+        Returns:
+            float: The chord cost in currency per MWh.
+        """
+        if p_to == p_from:
+            return float(self.calculate_marginal_cost(start, p_to))
+        return (
+            self.calculate_cost(start, p_to) - self.calculate_cost(start, p_from)
+        ) / (p_to - p_from)
 
     def as_dict(self) -> dict:
         """
