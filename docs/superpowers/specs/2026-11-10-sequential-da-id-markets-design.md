@@ -508,6 +508,20 @@ The v1 design deliberately leaves these extension points:
 - **L4:** the forecast error correlations are uncalibrated assumptions.
 - **L5:** the battery has no per-market forecast and no correction bids; its feasibility relies on state-of-charge-aware bid construction.
 - **L6:** start-block families removed by `complex_clearing`'s surplus loop are not re-admitted; with idle thermal capacity this can leave demand unserved at the cap price. In `example_01k` this is the dominant cause of the 27 DA / 22 ID cap hours and of the 176.7 MWh of unserved demand. Changing the clearing or the S/F pricing is a design decision outside v1.
+  - **Status (2026-11-11): known issue, deliberately left as-is.** Analysis kept for when it is revisited:
+  - **Root cause:** under partial-load efficiency, S's price (average cost at min load plus start-up) exceeds F's price (average extra cost from min to max). When the unit is the last one needed, F is part-accepted and sets the price at F's level, so S loses money and F has no profit to cover it. Only part of the gap is start-up cost; most of it comes from cost per MWh falling with load (reference CCGT: 68.2 vs 45.4 €/MWh before any start-up cost).
+  - **Two distinct causes:** (a) the unit's own F sets the price; (b) the system needs less than the unit's min load, so cheaper divisible sellers back off and set a price below S's.
+  - **Options considered:**
+
+    | Option | Fixes (a) | Fixes (b) | Notes |
+    |---|---|---|---|
+    | 1. Re-admit removed blocks in `complex_clearing` | No (cycles) | No | Only helps when several blocks were deleted at once unnecessarily |
+    | 2. Spread only the start-up cost over S and F | No | No | The S–F gap remains |
+    | 3. Single all-or-nothing S+F block | No (swaps it for (b)) | No | Loses the flexible range in DA |
+    | 4. Common price for S and F, between full-output average cost incl. start-up and S's price | Yes | No | At the low end the unit clears more often but can lose money when partly dispatched; at S's price it never loses but clears less |
+    | 5. Run the plant, skip the surplus check, pay uplift (US style) | Yes | Yes | Adds a new settlement concept to ASSUME |
+
+  - **Suggested first step when revisiting:** classify each cap hour in `example_01k` as (a) or (b); if (a) dominates, option 4 is a small change to the thermal strategy's F price.
 
 ## 12. Backward compatibility and regression check
 
