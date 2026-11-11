@@ -29,6 +29,7 @@ available_examples = {
         "scenario": "example_01a",
         "study_case": "dam_with_complex_clearing",
     },
+    "small_sequential_da_id": {"scenario": "example_01k", "study_case": "base"},
     "small_with_vre": {"scenario": "example_01b", "study_case": "base"},
     "small_with_vre_and_storage": {
         "scenario": "example_01c",

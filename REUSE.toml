@@ -12,3 +12,9 @@ path = "tests/fixtures/per_market_forecasts/**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "ASSUME Developers"
 SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "examples/inputs/example_01k/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "ASSUME Developers"
+SPDX-License-Identifier = "MIT"

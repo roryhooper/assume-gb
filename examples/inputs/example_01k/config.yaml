@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: ASSUME Developers
+#
+# SPDX-License-Identifier: MIT
+
+base:
+  start_date: 2019-03-17 00:00
+  end_date: 2019-03-25 00:00
+  time_step: 1h
+  save_frequency_hours: 24
+
+  markets_config:
+    DA:
+      operator: DA_operator
+      product_type: energy
+      start_date: 2019-03-17 09:00
+      end_date: 2019-03-23 10:00
+      products:
+        - duration: 1h
+          count: 24
+          first_delivery: 15h
+      opening_frequency: 24h
+      opening_duration: 1h
+      volume_unit: MWh
+      price_unit: EUR/MWh
+      maximum_bid_volume: 100000
+      maximum_bid_price: 3000
+      minimum_bid_price: -500
+      market_mechanism: complex_clearing
+      param_dict:
+        solver_name: highs
+        pricing_mechanism: pay_as_clear
+      additional_fields: [bid_type, min_acceptance_ratio, parent_bid_id]
+    ID:
+      operator: ID_operator
+      product_type: energy
+      start_date: 2019-03-17 22:00
+      end_date: 2019-03-23 23:00
+      products:
+        - duration: 1h
+          count: 24
+          first_delivery: 2h
+      opening_frequency: 24h
+      opening_duration: 1h
+      volume_unit: MWh
+      price_unit: EUR/MWh
+      maximum_bid_volume: 100000
+      maximum_bid_price: 3000
+      minimum_bid_price: -500
+      market_mechanism: complex_clearing
+      param_dict:
+        solver_name: highs
+        pricing_mechanism: pay_as_clear
+      additional_fields: [bid_type, min_acceptance_ratio, parent_bid_id]

@@ -1,0 +1,9 @@
+name,technology,bidding_DA,bidding_ID,fuel_type,emission_factor,max_power,min_power,efficiency,additional_cost,hot_start_cost,warm_start_cost,cold_start_cost,min_operating_time,min_down_time,unit_operator,ramp_up,ramp_down,downtime_hot_start,downtime_warm_start,partial_load_eff
+Wind Onshore,wind_onshore,powerplant_energy_naive,powerplant_energy_naive,renewable,0.0,692,0.0,1.0,0.0,0.0,0.0,0.0,0,0,Operator-RE,,,,,
+Wind Offshore,wind_offshore,powerplant_energy_naive,powerplant_energy_naive,renewable,0.0,98,0.0,1.0,0.0,0.0,0.0,0.0,0,0,Operator-RE,,,,,
+Solar,solar,powerplant_energy_naive,powerplant_energy_naive,renewable,0.0,635,0.0,1.0,0.0,0.0,0.0,0.0,0,0,Operator-RE,,,,,
+Gas 1,combined cycle gas turbine,powerplant_energy_heuristic_flexable_hourly_linked,powerplant_energy_heuristic_flexable_hourly_linked,natural gas,0.201,94,38.54,0.58,3.5,24.1,34.2,46.7,5,3,Operator-Gas,78.96,78.96,8.0,48.0,True
+Gas 2,combined cycle gas turbine,powerplant_energy_heuristic_flexable_hourly_linked,powerplant_energy_heuristic_flexable_hourly_linked,natural gas,0.201,94,38.54,0.55,3.5,24.1,34.2,46.7,5,3,Operator-Gas,78.96,78.96,8.0,48.0,True
+Gas 3,combined cycle gas turbine,powerplant_energy_heuristic_flexable_hourly_linked,powerplant_energy_heuristic_flexable_hourly_linked,natural gas,0.201,93,38.13,0.52,3.5,24.1,34.2,46.7,5,3,Operator-Gas,78.12,78.12,8.0,48.0,True
+Hard coal,hard coal,powerplant_energy_heuristic_flexable_hourly_linked,powerplant_energy_heuristic_flexable_hourly_linked,hard coal,0.335,321,131.61,0.41,1.3,32.7,51.6,69.9,7,6,Operator-Coal,221.49,221.49,8.0,48.0,True
+Lignite,lignite,powerplant_energy_heuristic_flexable_hourly_linked,powerplant_energy_heuristic_flexable_hourly_linked,lignite,0.406,271,135.5,0.39,1.65,32.5,51.3,69.9,10,7,Operator-Coal,143.63,143.63,8.0,48.0,True

@@ -1,0 +1,2 @@
+name,technology,bidding_DA,bidding_ID,max_power_charge,max_power_discharge,capacity,efficiency_charge,efficiency_discharge,additional_cost_charge,additional_cost_discharge,min_soc,max_soc,initial_soc,unit_operator
+Battery,li-ion_battery,storage_energy_heuristic_flexable,storage_energy_heuristic_flexable,100,90,190,0.95,0.95,5,5,0,1,0.5,Operator-Storage
