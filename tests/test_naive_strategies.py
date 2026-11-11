@@ -282,6 +282,17 @@ def test_correction_bids_prices_and_signs(mock_market_config, mock_supports_minm
     assert bids[1]["start_time"] == products[1][0]
 
 
+def test_correction_bids_skip_float_noise(mock_market_config, mock_supports_minmax):
+    unit = _correction_unit(mock_supports_minmax, [1e-12, -5e-10, 1e-9, 2e-9])
+    products = [
+        (start + timedelta(hours=h), start + timedelta(hours=h + 1), None)
+        for h in range(4)
+    ]
+    bids = BaseStrategy().calculate_correction_bids(unit, mock_market_config, products)
+    assert [b["volume"] for b in bids] == [2e-9]
+    assert bids[0]["start_time"] == products[3][0]
+
+
 def test_correction_bid_at_cap_survives_market_validation(mock_supports_minmax, caplog):
     mc = MarketConfig(
         market_id="Test",

@@ -1022,7 +1022,8 @@ class BaseStrategy:
             product_tuples (list[Product]): The product tuples.
 
         Returns:
-            Orderbook: The correction bids (no bid where the correction is zero).
+            Orderbook: The correction bids (no bid where the correction is zero up to
+            float noise, |c| <= 1e-9).
         """
         if not product_tuples or market_config.product_type != "energy":
             return []
@@ -1032,7 +1033,7 @@ class BaseStrategy:
 
         bids = []
         for product, c in zip(product_tuples, correction):
-            if c == 0:
+            if abs(c) <= 1e-9:
                 continue
             bids.append(
                 {
