@@ -174,6 +174,24 @@ def test_profit_attribution_reconciles(sim):
 
 
 @pytest.mark.slow
+def test_per_market_volumes_exported(sim):
+    """unit_dispatch carries energy_DA and energy_ID; they add up to the final position."""
+    _, tables = sim
+    dispatch = tables["unit_dispatch"]
+    assert {"energy_DA", "energy_ID"} <= set(dispatch.columns)
+    positions = _positions(tables)
+    exported = (
+        dispatch.set_index(["time", "unit"])[["energy_DA", "energy_ID"]]
+        .fillna(0.0)
+        .sum(axis=1)
+        .unstack("unit")
+        .reindex(index=positions.index, columns=positions.columns)
+        .fillna(0.0)
+    )
+    np.testing.assert_allclose(exported.to_numpy(), positions.to_numpy(), atol=1e-6)
+
+
+@pytest.mark.slow
 def test_battery_soc_within_bounds(sim):
     _, tables = sim
     soc = tables["unit_dispatch"].query("unit == 'Battery'")["soc"].dropna()

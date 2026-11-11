@@ -412,10 +412,16 @@ class UnitsOperator(Role):
                 "deviation",
             ]
 
+            # per-market volumes, matched exactly to avoid look-alike keys
+            per_market_volumes = {
+                f"energy_{market_id}" for market_id in self.registered_markets
+            }
+
             for key in unit.outputs.keys():
-                for output in valid_outputs:
-                    if output in key:
-                        dispatch[key] = unit.outputs[key].loc[start:end]
+                if key in per_market_volumes or any(
+                    output in key for output in valid_outputs
+                ):
+                    dispatch[key] = unit.outputs[key].loc[start:end]
             dispatch["time"] = unit.index.get_date_list(start, end)
             dispatch["unit"] = unit_id
             unit_dispatch.append(dispatch)

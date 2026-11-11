@@ -254,6 +254,30 @@ async def test_dispatch_export_includes_profit_and_deviation_not_strategy_profit
     assert "profit" not in keys
 
 
+async def test_dispatch_export_includes_per_market_volumes(
+    pp_operator: UnitsOperator,
+):
+    unit = pp_operator.units["testpp"]
+    clock = pp_operator.context.context.clock
+    pp_operator.registered_markets["DA"] = pp_operator.available_markets[0]
+    t1 = start + rd(hours=1)
+    _set_position(unit, t1, 100)
+    # look-alike keys of other markets or outputs are not exported by this rule
+    unit.outputs["energy_DAX"].at[t1] = 1.0
+
+    last = clock.time
+    clock.set_time(clock.time + 3600)
+    _, unit_dispatch = pp_operator.get_actual_dispatch("energy", last)
+
+    dispatch = unit_dispatch[0]
+    assert "energy_DA" in dispatch
+    assert "energy_DAX" not in dispatch
+    assert "energy_ID" not in dispatch
+    assert list(dispatch["energy_DA"]) == [100]
+    # the physical output is exported as power
+    assert list(dispatch["power"]) == [80]
+
+
 async def test_on_stop_flushes_final_dispatch(pp_operator: UnitsOperator):
     unit = pp_operator.units["testpp"]
     clock = pp_operator.context.context.clock
