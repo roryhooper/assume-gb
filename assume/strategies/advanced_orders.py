@@ -3,6 +3,10 @@
 # SPDX-License-Identifier: MIT
 
 
+from datetime import datetime
+
+import numpy as np
+
 from assume.common.base import SupportsMinMax
 from assume.common.market_objects import MarketConfig, Orderbook, Product
 from assume.common.utils import parse_duration
@@ -403,3 +407,264 @@ def determine_on_case(
     if p_0m < p_mU:
         return "on-c", prices
     return "on-b", prices
+
+
+# tolerance for comparing positions and volumes (MW)
+_EPS = 1e-6
+
+
+class EnergyHeuristicFlexableHourlyLinkedStrategy(EnergyHeuristicFlexableStrategy):
+    """
+    Thermal strategy for sequential energy markets with hourly block and linked bids.
+
+    Per product hour, measured from the corrected position ``P_c`` (the position after
+    any forced correction, see :meth:`BaseStrategy.calculate_correction_bids`):
+
+    - **Off** (``P_c == 0``): a start bid **S** (single-hour block, min load ``m``,
+      all-or-nothing) priced at the min-load cost with flexable's start-up markup or
+      stay-on discount, and a flexible bid **F** (``U - m``, linked to S) at the chord
+      cost ``calculate_chord_cost(m, U)``. Nothing while the minimum down time runs.
+    - **On** (``P_c >= m``): the hour's switch prices from :func:`determine_on_case`
+      decide between
+
+      - on-a (shutdown not allowed): increase **I** at ``p_mU``, decrease **D**
+        (``P_c - m``, may clear partially) at ``p_mU - 0.01``;
+      - on-b (min load never optimal): **I** at ``p_0U``, exit **X** of the whole
+        position (all-or-nothing, no D) at ``p_0U - 0.01``;
+      - on-c: **I** at ``p_mU``, **D** at ``p_mU - 0.01`` and **X** (``m``,
+        all-or-nothing, linked to D) at ``p_0m - 0.01``.
+
+    Every buy is priced below every sell of the same unit-hour, so the clearing never
+    matches the unit with itself. Ramp limits apply to the upward volumes (F, I) only.
+    Running and down times are carried forward along the committed position path
+    ``P_c``, not along the unit's own (uncertain) economic bids.
+
+    Args:
+        *args: Variable length argument list.
+        **kwargs: Arbitrary keyword arguments (``eom_foresight`` as for flexable).
+    """
+
+    def calculate_bids(
+        self,
+        unit: SupportsMinMax,
+        market_config: MarketConfig,
+        product_tuples: list[Product],
+        **kwargs,
+    ) -> Orderbook:
+        """
+        Calculates correction bids followed by the hourly switch-price bids.
+
+        Args:
+            unit (SupportsMinMax): The power plant.
+            market_config (MarketConfig): The market configuration.
+            product_tuples (list[Product]): The products (one per hour).
+            kwargs (dict): Additional arguments.
+
+        Returns:
+            Orderbook: The bids, corrections first.
+        """
+        if not product_tuples:
+            return []
+        if market_config.product_type != "energy":
+            # the switch-price logic is defined for energy positions only
+            return super().calculate_bids(unit, market_config, product_tuples, **kwargs)
+
+        market_id = market_config.market_id
+        first_start = product_tuples[0][0]
+        last_end = product_tuples[-1][1]
+
+        bids = self.calculate_correction_bids(unit, market_config, product_tuples)
+
+        min_add, max_add = unit.calculate_min_max_power(
+            first_start, last_end, product_type="energy", market_id=market_id
+        )
+        correction = unit.calculate_position_correction(
+            first_start, last_end, market_id
+        )
+
+        # restart penalty: start-up cost after the minimum down time
+        restart_cost = unit.get_starting_costs(-unit.min_down_time)
+
+        previous_power = unit.get_output_before(first_start)
+        op_time = unit.get_operation_time(first_start)
+
+        for product, lo, hi, c in zip(product_tuples, min_add, max_add, correction):
+            start, end, only_hours = product
+            position = unit.outputs["energy"].at[start] + c
+            if abs(position) < _EPS:
+                position = 0.0
+            min_load = lo + position
+            available_max = hi + position
+
+            # upward range limited by ramp rates; downward (buy) volumes are not
+            ramped = unit.calculate_ramp(op_time, previous_power, hi, position)
+            upper = position + min(max(ramped, max(min_load - position, 0.0)), hi)
+
+            base = {
+                "start_time": start,
+                "end_time": end,
+                "only_hours": only_hours,
+                "node": unit.node,
+            }
+
+            if position == 0:
+                min_down_running = -unit.min_down_time < op_time < 0
+                if available_max > _EPS and not min_down_running:
+                    bids.extend(
+                        self._off_bids(unit, market_id, base, min_load, upper, op_time)
+                    )
+            else:
+                allowed = self._shutdown_allowed(unit, start, op_time)
+                bids.extend(
+                    self._on_bids(
+                        unit, base, position, min_load, upper, restart_cost, allowed
+                    )
+                )
+
+            # carry running/down time forward along the committed position path
+            previous_power = position
+            op_time = max(op_time, 0) + 1 if position > 0 else min(op_time, 0) - 1
+
+        return self.remove_empty_bids(bids)
+
+    def _off_bids(
+        self,
+        unit: SupportsMinMax,
+        market_id: str,
+        base: dict,
+        min_load: float,
+        upper: float,
+        op_time: int,
+    ) -> Orderbook:
+        """Start bid S (min load, all-or-nothing) and linked flexible bid F."""
+        start = base["start_time"]
+        bids = []
+        parent_id = None
+        if min_load > _EPS:
+            marginal_cost = unit.calculate_marginal_cost(start, min_load)
+            if op_time > 0:
+                price = calculate_EOM_price_if_on(
+                    unit=unit,
+                    market_id=market_id,
+                    start=start,
+                    marginal_cost_flex=marginal_cost,
+                    bid_quantity_inflex=min_load,
+                    foresight=self.foresight,
+                )
+            else:
+                price = calculate_EOM_price_if_off(
+                    unit=unit,
+                    marginal_cost_inflex=marginal_cost,
+                    bid_quantity_inflex=min_load,
+                    op_time=op_time,
+                )
+            parent_id = f"{unit.id}_S_{start:%Y%m%dT%H}"
+            bids.append(
+                {
+                    **base,
+                    "price": price,
+                    "volume": {start: min_load},
+                    "bid_type": "BB",
+                    "min_acceptance_ratio": 1,
+                    "bid_id": parent_id,
+                }
+            )
+        flex = upper - min_load
+        if flex > _EPS:
+            bids.append(
+                {
+                    **base,
+                    "price": unit.calculate_chord_cost(start, min_load, upper),
+                    "volume": {start: flex},
+                    "bid_type": "LB",
+                    "parent_bid_id": parent_id,
+                }
+            )
+        return bids
+
+    def _on_bids(
+        self,
+        unit: SupportsMinMax,
+        base: dict,
+        position: float,
+        min_load: float,
+        upper: float,
+        restart_cost: float,
+        shutdown_allowed: bool,
+    ) -> Orderbook:
+        """Increase (I), decrease (D) and exit (X) bids of a running unit."""
+        start = base["start_time"]
+        case, prices = determine_on_case(
+            unit.calculate_cost(start, min_load),
+            unit.calculate_cost(start, upper),
+            min_load,
+            upper,
+            restart_cost,
+            shutdown_allowed,
+        )
+        sell_price = prices["p_0U"] if case == "on-b" else prices["p_mU"]
+
+        bids = []
+        increase = upper - position
+        if increase > _EPS:
+            bids.append({**base, "price": sell_price, "volume": increase})
+
+        decrease = position - min_load
+        has_decrease = case != "on-b" and decrease > _EPS
+        decrease_id = f"{unit.id}_D_{start:%Y%m%dT%H}"
+        if has_decrease:
+            bids.append(
+                {
+                    **base,
+                    "price": prices["p_mU"] - 0.01,
+                    "volume": {start: -decrease},
+                    "bid_type": "BB",
+                    "bid_id": decrease_id,
+                }
+            )
+
+        if case == "on-b":
+            # the whole position in one all-or-nothing buy
+            bids.append(
+                {
+                    **base,
+                    "price": prices["p_0U"] - 0.01,
+                    "volume": {start: -position},
+                    "bid_type": "BB",
+                    "min_acceptance_ratio": 1,
+                }
+            )
+        elif case == "on-c":
+            bids.append(
+                {
+                    **base,
+                    "price": prices["p_0m"] - 0.01,
+                    "volume": {start: -min_load},
+                    "bid_type": "LB" if has_decrease else "BB",
+                    "min_acceptance_ratio": 1,
+                    "parent_bid_id": decrease_id if has_decrease else None,
+                }
+            )
+        return bids
+
+    @staticmethod
+    def _shutdown_allowed(unit: SupportsMinMax, start: datetime, op_time: int) -> bool:
+        """
+        Whether the unit may shut down in the hour starting at *start*.
+
+        It must have run at least ``min_operating_time`` hours (*op_time*, carried along
+        the committed positions), and the next ``min_down_time - 1`` hours within the
+        index must hold no position, so the off-period is not shorter than
+        ``min_down_time``.
+        """
+        if op_time < unit.min_operating_time:
+            return False
+        horizon = int(unit.min_down_time) - 1
+        if horizon <= 0:
+            return True
+        first = start + unit.index.freq
+        last = min(start + horizon * unit.index.freq, unit.index[-1])
+        if first > last:
+            return True
+        upcoming = np.asarray(unit.outputs["energy"].loc[first:last], dtype=float)
+        return not (np.abs(upcoming) > _EPS).any()

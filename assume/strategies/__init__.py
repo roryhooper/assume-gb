@@ -5,6 +5,7 @@
 from assume.common.base import BaseStrategy, LearningStrategy
 from assume.strategies.advanced_orders import (
     EnergyHeuristicFlexableBlockStrategy,
+    EnergyHeuristicFlexableHourlyLinkedStrategy,
     EnergyHeuristicFlexableLinkedStrategy,
 )
 from assume.strategies.extended import EnergyNaiveOtcStrategy
@@ -73,6 +74,7 @@ bidding_strategies: dict[str, type[BaseStrategy | UnitOperatorStrategy]] = {
     "powerplant_energy_heuristic_flexable": EnergyHeuristicFlexableStrategy,
     "powerplant_energy_heuristic_block": EnergyHeuristicFlexableBlockStrategy,
     "powerplant_energy_heuristic_linked": EnergyHeuristicFlexableLinkedStrategy,
+    "powerplant_energy_heuristic_flexable_hourly_linked": EnergyHeuristicFlexableHourlyLinkedStrategy,
     "powerplant_capacity_heuristic_balancing_neg": CapacityHeuristicBalancingNegStrategy,
     "powerplant_capacity_heuristic_balancing_pos": CapacityHeuristicBalancingPosStrategy,
     "storage_energy_heuristic_flexable": StorageEnergyHeuristicFlexableStrategy,
