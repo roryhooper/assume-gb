@@ -76,6 +76,9 @@ def test_switch_prices_degenerate_ranges():
     case, prices = determine_on_case(COST_U, COST_U, 100, 100, 0, True)
     assert prices["p_mU"] == pytest.approx(prices["p_0U"])
     assert case == "on-b"
+    # equal within tolerance: same fallback, no huge chord from float noise
+    case, prices = determine_on_case(COST_U, COST_U, 100 - 1e-9, 100, 0, True)
+    assert prices["p_mU"] == pytest.approx(prices["p_0U"])
     # m == 0: running at zero always beats a restart, never a shutdown block
     case, prices = determine_on_case(0.0, COST_U, 0, 100, 10, True)
     assert prices["p_0m"] == float("-inf")
@@ -424,35 +427,77 @@ def test_first_index_hour():
     assert x_bid["volume"] == {t: pytest.approx(-70)}
 
 
-def test_running_and_down_times_follow_committed_positions():
+def _if_on_price(pp, strategy, t):
+    return calculate_EOM_price_if_on(
+        unit=pp,
+        market_id="ID",
+        start=t,
+        marginal_cost_flex=pp.calculate_marginal_cost(t, 40),
+        bid_quantity_inflex=40,
+        foresight=strategy.foresight,
+    )
+
+
+def test_off_hours_assume_start_bids_clear():
     # position 8-10, min down time 3; products 10..14
     pp, strategy = _ccgt(_running([8, 9, 10]), min_down_time=3)
     bids = strategy.calculate_bids(pp, _market_config(), _products(10, 11, 12, 13, 14))
-    hours = {b["start_time"] for b in bids}
-    # 10: on bids; 11: off after running (start bid with stay-on discount);
-    # 12 and 13: min down time not over along the committed path -> nothing;
-    # 14: off for 3 h -> start bid again
-    assert hours == {INDEX[10], INDEX[11], INDEX[14]}
-    s_11 = _bid(bids, bid_id="ccgt_S_20230701T11")
-    assert s_11["price"] == pytest.approx(
+    # 10: running -> on bids (on-b: I and X, shutdown allowed with 11, 12 free)
+    on_bids = [b for b in bids if b["start_time"] == INDEX[10]]
+    assert len(on_bids) == 2
+    assert _bid(on_bids, bid_type="BB")["volume"] == {INDEX[10]: pytest.approx(-70)}
+    # 11..14: off hours; as in flexable the start bids are assumed to clear, so
+    # the unit is planned on and every hour gets S + F with the stay-on discount
+    for h in range(11, 15):
+        t = INDEX[h]
+        s_bid = _bid(bids, bid_id=f"ccgt_S_20230701T{h:02d}")
+        assert s_bid["price"] == pytest.approx(_if_on_price(pp, strategy, t))
+        f_bid = _bid(bids, bid_type="LB", start_time=t)
+        assert f_bid["parent_bid_id"] == s_bid["bid_id"]
+
+
+def test_day_ahead_window_after_running_has_no_empty_hours():
+    # committed on 6-9, min down 4, min operating 4; DA products 10..17
+    pp, strategy = _ccgt(_running([6, 7, 8, 9]), min_down_time=4, min_operating_time=4)
+    hours = range(10, 18)
+    bids = strategy.calculate_bids(pp, _market_config("DA"), _products(*hours))
+    for h in hours:
+        t = INDEX[h]
+        s_bid = _bid(bids, bid_id=f"ccgt_S_20230701T{h:02d}")
+        assert s_bid["volume"] == {t: 40}
+        f_bid = _bid(bids, bid_type="LB", start_time=t)
+        assert f_bid["volume"] == {t: pytest.approx(60)}
+    s_10 = _bid(bids, bid_id="ccgt_S_20230701T10")
+    assert s_10["price"] == pytest.approx(
         calculate_EOM_price_if_on(
             unit=pp,
-            market_id="ID",
-            start=INDEX[11],
-            marginal_cost_flex=pp.calculate_marginal_cost(INDEX[11], 40),
+            market_id="DA",
+            start=INDEX[10],
+            marginal_cost_flex=pp.calculate_marginal_cost(INDEX[10], 40),
             bid_quantity_inflex=40,
             foresight=strategy.foresight,
         )
     )
-    s_14 = _bid(bids, bid_id="ccgt_S_20230701T14")
-    assert s_14["price"] == pytest.approx(
+
+
+def test_committed_shutdown_still_blocks_restart():
+    # ran 6-8, committed off from 9; min down 3: products 10..13
+    pp, strategy = _ccgt(_running([6, 7, 8]), min_down_time=3)
+    bids = strategy.calculate_bids(pp, _market_config(), _products(10, 11, 12, 13))
+    # 10 (off 1 h) and 11 (off 2 h): min down time not over -> no bids
+    assert {b["start_time"] for b in bids} == {INDEX[12], INDEX[13]}
+    s_12 = _bid(bids, bid_id="ccgt_S_20230701T12")
+    assert s_12["price"] == pytest.approx(
         calculate_EOM_price_if_off(
             unit=pp,
-            marginal_cost_inflex=pp.calculate_marginal_cost(INDEX[14], 40),
+            marginal_cost_inflex=pp.calculate_marginal_cost(INDEX[12], 40),
             bid_quantity_inflex=40,
             op_time=-3,
         )
     )
+    # 13: S + F at 12 assumed to clear -> stay-on discount
+    s_13 = _bid(bids, bid_id="ccgt_S_20230701T13")
+    assert s_13["price"] == pytest.approx(_if_on_price(pp, strategy, INDEX[13]))
 
 
 def test_non_energy_product_falls_back_to_flexable():

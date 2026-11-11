@@ -16,6 +16,9 @@ from assume.strategies.flexable import (
     calculate_EOM_price_if_on,
 )
 
+# tolerance for comparing positions and volumes (MW)
+_EPS = 1e-6
+
 
 class EnergyHeuristicFlexableBlockStrategy(EnergyHeuristicFlexableStrategy):
     """
@@ -396,9 +399,10 @@ def determine_on_case(
         ``p_0U = (cost_U - R) / U`` and ``p_0m = (cost_m - R) / m``.
         With ``U == m`` there is no flexible range and ``p_mU = p_0U``; with
         ``m <= 0`` running at min load always beats a shutdown and ``p_0m = -inf``.
+        ``U`` and ``m`` are treated as equal within a tolerance of 1e-6 MW.
     """
     p_0U = (cost_U - R) / U if U > 0 else float("inf")
-    p_mU = (cost_U - cost_m) / (U - m) if U != m else p_0U
+    p_mU = (cost_U - cost_m) / (U - m) if abs(U - m) >= _EPS else p_0U
     p_0m = (cost_m - R) / m if m > 0 else float("-inf")
     prices = {"p_mU": p_mU, "p_0U": p_0U, "p_0m": p_0m}
 
@@ -407,10 +411,6 @@ def determine_on_case(
     if p_0m < p_mU:
         return "on-c", prices
     return "on-b", prices
-
-
-# tolerance for comparing positions and volumes (MW)
-_EPS = 1e-6
 
 
 class EnergyHeuristicFlexableHourlyLinkedStrategy(EnergyHeuristicFlexableStrategy):
@@ -436,8 +436,9 @@ class EnergyHeuristicFlexableHourlyLinkedStrategy(EnergyHeuristicFlexableStrateg
 
     Every buy is priced below every sell of the same unit-hour, so the clearing never
     matches the unit with itself. Ramp limits apply to the upward volumes (F, I) only.
-    Running and down times are carried forward along the committed position path
-    ``P_c``, not along the unit's own (uncertain) economic bids.
+    Running and down times are carried forward as in flexable for off hours (the
+    start bids S + F are assumed to clear), and along the committed position ``P_c``
+    for running hours (I, D and X are never assumed to clear).
 
     Args:
         *args: Variable length argument list.
@@ -509,10 +510,20 @@ class EnergyHeuristicFlexableHourlyLinkedStrategy(EnergyHeuristicFlexableStrateg
 
             if position == 0:
                 min_down_running = -unit.min_down_time < op_time < 0
+                off_bids = []
                 if available_max > _EPS and not min_down_running:
-                    bids.extend(
-                        self._off_bids(unit, market_id, base, min_load, upper, op_time)
+                    off_bids = self._off_bids(
+                        unit, market_id, base, min_load, upper, op_time
                     )
+                bids.extend(off_bids)
+                # as in flexable: assume the start bids (S + F) clear, so the next
+                # hour is planned on; without bids the unit stays off
+                if off_bids:
+                    previous_power = upper
+                    op_time = max(op_time, 0) + 1
+                else:
+                    previous_power = 0.0
+                    op_time = min(op_time, 0) - 1
             else:
                 allowed = self._shutdown_allowed(unit, start, op_time)
                 bids.extend(
@@ -520,10 +531,9 @@ class EnergyHeuristicFlexableHourlyLinkedStrategy(EnergyHeuristicFlexableStrateg
                         unit, base, position, min_load, upper, restart_cost, allowed
                     )
                 )
-
-            # carry running/down time forward along the committed position path
-            previous_power = position
-            op_time = max(op_time, 0) + 1 if position > 0 else min(op_time, 0) - 1
+                # committed hours: follow the position, never assume I/D/X clear
+                previous_power = position
+                op_time = max(op_time, 0) + 1
 
         return self.remove_empty_bids(bids)
 
