@@ -40,8 +40,8 @@ class PowerPlant(SupportsMinMax):
         cold_start_cost (float, optional): The cost of a cold start, where the power plant is restarted after a prolonged downtime. Defaults to 0.
         min_operating_time (float, optional): The minimum duration that the power plant must operate once started, in hours. Defaults to 0.
         min_down_time (float, optional): The minimum downtime required after a shutdown before the power plant can be restarted, in hours. Defaults to 0.
-        downtime_hot_start (int, optional): The downtime required after a hot start before the power plant can be restarted, in hours. Defaults to 8.
-        downtime_warm_start (int, optional): The downtime required after a warm start before the power plant can be restarted, in hours. Defaults to 48.
+        downtime_hot_start (int, optional): The longest downtime, in hours, after which a restart is a hot start. Defaults to 0.
+        downtime_warm_start (int, optional): The longest downtime, in hours, after which a restart is a warm start; longer downtimes are cold starts. Defaults to 0.
         max_heat_extraction (float, optional): The maximum amount of heat that the power plant can extract for external use, in some suitable unit. Defaults to 0.
         location (Tuple[float, float], optional): The geographical coordinates (latitude and longitude) of the power plant's location. Defaults to (0.0, 0.0).
         node (str, optional): The identifier of the electrical bus or network node to which the power plant is connected. Defaults to "node0".

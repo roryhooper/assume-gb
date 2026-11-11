@@ -37,15 +37,23 @@ The study case is `base`. Use `assume-market examples/inputs/example_01k/config.
 ## What to look at
 
 - `market_dispatch` and `market_meta`: DA and ID results, one per day.
-- `unit_dispatch`: per unit and hour, `energy` (physical output), the per-market columns `energy_DA`, `energy_ID`, `energy_cashflow_<m>`, `energy_total_costs_<m>`, `energy_profit_<m>` and `energy_deviation` (physical output minus position).
+- `unit_dispatch`: per unit and hour, `power` (physical output), the per-market columns `energy_DA`, `energy_ID`, `energy_cashflow_<m>`, `energy_total_costs_<m>`, `energy_profit_<m>` and `energy_deviation` (physical output minus position).
 
 ### Lead day
 
-17 March is a lead day without deliveries: the first auctions open on it for 18 March. Every thermal unit is therefore long off at the first DA auction and prices its first start as a cold start. This is intended; analysis should exclude 17 March, and the first delivery day carries start-up effects.
+17 March is a lead day without deliveries: the first auctions open on it for 18 March. Every thermal unit has therefore been off for 24 hours at the first DA auction and prices its first start as a warm start (24 h is within `downtime_warm_start` of 48 h), the same start-up cost the accounting books. This is intended; analysis should exclude 17 March, and the first delivery day carries start-up effects.
 
 ### Reading scarcity prices
 
-DA uses forecasts with errors. A DA over-forecast of demand or under-forecast of wind or solar can push a DA hour to the price cap of 3000 EUR/MWh even though the realised capacity suffices, with ID correcting back down. Before reading a cap event as physical scarcity, check the ID price and the forecast error of that hour. Likewise, ID hours with few or no trades have poorly defined prices; flag them instead of reading them literally.
+In this run 27 DA hours and 22 ID hours (of 168 each) clear at the price cap of 3000 EUR/MWh, and 176.7 MWh of demand in 13 hours is not bought at all (realised demand minus the demand's final position). Every one of those 13 hours clears ID at the cap while thermal capacity is idle. The week has enough capacity; these are not physical scarcity events.
+
+The dominant cause is a known limitation of the clearing: a thermal unit's start bid (all-or-nothing block at min load) is judged together with its linked flexible bid. When the flexible bid sets the hourly price at its average cost of the range above min load, the pair has a negative surplus, and `complex_clearing` removes the block and re-solves. The removal is permanent: the unit is not re-admitted even when the remaining supply then cannot meet demand, so the demand is left unbought at the cap.
+
+Forecast errors are a secondary cause: a DA over-forecast of demand or under-forecast of wind or solar can push a DA hour to the cap even though the realised capacity suffices, with ID correcting back down.
+
+Before reading a cap event as physical scarcity, check the ID price, the idle thermal capacity and the forecast error of that hour. Likewise, ID hours with few or no trades have poorly defined prices; flag them instead of reading them literally. The integration test `tests/test_sequential_integration.py` pins the cap-hour counts and the unserved demand.
+
+Note that the demand unit's `energy_deviation` is zero by construction (its physical consumption is taken to be its position), so it does not show unserved demand; compare the realised `demand_df.csv` with the demand's `energy_DA` + `energy_ID` instead.
 
 ### Expected deviations
 

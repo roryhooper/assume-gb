@@ -159,11 +159,11 @@ Single-market behaviour is unchanged. When a unit holds no earlier position and 
   - `SupportsMinMax`: adds start-up costs (`get_starting_costs`) for off→on transitions.
   - `Demand`: returns zeros. An inflexible demand has no operating cost; its economic outcome is its payments, which are already in its cashflow. Its `price` is a willingness to pay used for bidding, not a cost it incurs.
 - **In `set_dispatch_plan`:**
-  - evaluate `calculate_operating_cost` from the first affected hour to the end of the unit index, before and after applying the market's volumes. The full-horizon window is needed for exactness: adding volume in one hour can split a long off-period and reclassify a *later* start from warm/cold to hot, outside any short window. Over a one-week hourly index the extra evaluation cost is negligible;
+  - evaluate `calculate_operating_cost` from the first affected hour to the first hour with a non-zero position after the order (or to the end of the unit index if there is none), before and after applying the market's volumes. Adding volume in one hour can split a long off-period and reclassify a *later* start from warm/cold to hot, so the window must reach the next start; beyond it the down time counter is reset and the cost of both position paths is identical, so the result equals the full-horizon evaluation (amended 2026-11-11: the full-horizon window made every order ~100× more expensive on a year index). Orders with zero accepted volume are skipped;
   - store the difference (which is zero outside the hours whose cost actually changed) in `outputs[f"{product_type}_total_costs_{market_id}"]`.
 - **After the cashflow is computed:** `outputs[f"{product_type}_profit_{market_id}"]` = `energy_cashflow_<m>` − `energy_total_costs_<m>`.
 - **Property:** Σₘ profitₘ = total cashflow − cost of the final position.
-- **Export:** `get_actual_dispatch` adds `"energy_profit"` and `"energy_deviation"` to its `valid_outputs` substring filter. `energy_cashflow_<m>` and `energy_total_costs_<m>` already match the existing `"cashflow"` and `"total_costs"` filters. The existing strategy-level `profit` output is not exported, as today.
+- **Export:** `get_actual_dispatch` adds `"energy_profit"` and `"energy_deviation"` to its `valid_outputs` substring filter. `energy_cashflow_<m>` and `energy_total_costs_<m>` already match the existing `"cashflow"` and `"total_costs"` filters. The per-market volumes `energy_<m>` are exported by exact key for the operator's registered markets (a substring filter would match too much). The existing strategy-level `profit` output is not exported, as today.
 
 ### 5.4 Feasible range per market
 
@@ -186,6 +186,8 @@ Single-market behaviour is unchanged. When a unit holds no earlier position and 
 | `Demand` | the single point demandₘ(*t*) |
 
 - Ramp limits are not applied to corrections; they apply to economic bids only.
+
+**What's left uncorrected.** A correction bid may clear only partly, or not at all, when the later market has no counterparty for it. The unmatched part stays in the position; at delivery `execute_current_dispatch` clips the position to what the unit can physically do, and the difference is recorded in `energy_deviation` (§5.1). A later balancing market (§10) would settle exactly this series.
 
 ### 5.6 Partial-load efficiency (`assume/units/powerplant.py`)
 
@@ -383,7 +385,7 @@ In `calculate_order_surplus` (`assume/markets/clearing_algorithms/complex_cleari
 - `config.yaml`, study case `base`:
   - `start_date: 2019-03-17 00:00`, `end_date: 2019-03-25 00:00`, `time_step: 1h`.
   - 17 March is a lead day with no deliveries; 18–24 March is the delivered week; analysis excludes 17 March.
-  - Because the lead day has zero output, every thermal unit reads as long-off at the first DA auction and prices its first start accordingly (a cold start under `get_operation_time`'s look-back). This is intended; the first delivery day carries start-up effects.
+  - Because the lead day has zero output, every thermal unit has been off for 24 hours at the first DA auction and prices its first start accordingly: a warm start (24 h ≤ `downtime_warm_start` of 48 h), counted with the full down time (`SupportsMinMax.get_downtime`), the same start-up cost the accounting books. This is intended; the first delivery day carries start-up effects. (Amended 2026-11-11: the original text said cold start; the strategy priced starts with `get_operation_time`, whose look-back is capped at max(min up, min down), while the accounting counted the full down time.)
 
 | | DA | ID |
 |---|---|---|
@@ -428,8 +430,8 @@ The per-market `end_date`s stop either market from opening for 25 March, which i
 - **Demand** (`demand_units.csv`): one unit, `max_power` −1000, `min_power` 0, `price` 3000, `demand_energy_naive` in both markets.
 - **Operators:** one per group: `Operator-RE`, `Operator-Gas`, `Operator-Coal`, `Operator-Storage`, `Operator-Demand`.
 - **Fuel prices:** example_03's `fuel_prices_df`, hourly mean, for the simulated window.
-- **Adequacy for the week:** dispatchable capacity is 873 MW, and residual load ranges from 167 to 874 MW. The one tight hour is covered by the battery.
-- **Reading scarcity prices:** a DA over-forecast of demand (or under-forecast of wind/solar) can push a DA hour to the 3000 cap even though realised capacity suffices, with ID correcting back down. This is an intended effect of forecast errors; the example docs say to check the ID price and the forecast error before reading a cap event as physical scarcity.
+- **Adequacy for the week:** dispatchable capacity is 873 MW, and residual load ranges from 167 to 874 MW, so physically only one hour is tight, and the battery can cover it. The simulation nevertheless prices 27 DA and 22 ID hours (of 168) at the 3000 cap and leaves 176.7 MWh of demand unbought in 13 hours, every one of them at the ID cap, while thermal capacity is idle. This is not a capacity shortage but known limitation L6 (§11). (Amended 2026-11-11: the original text implied the week clears without scarcity.)
+- **Reading scarcity prices:** the dominant cause of cap events in this example is L6: a start-block family (S with its linked F) whose F sets the hourly price at the chord cost has a negative surplus, `complex_clearing` removes it, and the removal is permanent, so the unit is not re-admitted even when demand is then left unbought at the cap. Forecast errors are a secondary cause: a DA over-forecast of demand (or under-forecast of wind/solar) can push a DA hour to the cap even though realised capacity suffices, with ID correcting back down. The example docs say to check the ID price, idle thermal capacity and the forecast error before reading a cap event as physical scarcity.
 
 ### 9.3 Generator `examples/inputs/example_01k/generate_inputs.py`
 
@@ -483,9 +485,10 @@ They are documented as assumptions in the script.
 - **Integration (`@pytest.mark.slow`):** a full run of `small_sequential_da_id` checks that:
   - both markets clear every day;
   - no thermal unit ends between 0 and min load;
-  - deviations behave per §3.4: demand and solar have none; every unit's hourly |`energy_deviation`| is within its capacity; per-unit weekly totals stay within pinned regression bounds. (Amended 2026-11-11: the original "≈ 0" claim contradicted §3.4, L1 and L5 — residual deviations are expected from uncleared corrections when the ID lacks counterparties, thermal min up/down enforcement over unsold hours, and storage joint-feasibility gaps under partial acceptance. They are recorded, warned about, and bounded by the test.)
+  - deviations behave per §5.5: demand and solar have none; every unit's hourly |`energy_deviation`| is within its capacity; per-unit weekly totals stay within pinned regression bounds. (Amended 2026-11-11: the original "≈ 0" claim contradicted §5.5, L1 and L5 — residual deviations are expected from uncleared corrections when the ID lacks counterparties, thermal min up/down enforcement over unsold hours, and storage joint-feasibility gaps under partial acceptance. They are recorded, summarised in one log line per unit at the end of the run, and bounded by the test.)
   - per-market profits add up to total profit;
-  - the battery's state of charge stays within bounds.
+  - the battery's state of charge stays within bounds;
+  - the DA/ID cap-hour counts and the unserved demand (realised demand minus the final demand position) match pinned snapshots (added 2026-11-11, see L6). The demand's zero deviation holds by construction (`Demand.execute_current_dispatch` takes the position as physical consumption) and is not a served-load check.
 
 ## 10. Path to option B (future balancing market)
 
@@ -499,11 +502,12 @@ The v1 design deliberately leaves these extension points:
 
 ## 11. Known limitations
 
-- **L1:** thermal decisions are made one hour at a time. Effects across hours enter only through *R* and the shutdown-allowed check. A unit committed for a long DA run can only shut down in ID at the end of the run (where later hours are off), although it can always reduce to min load (D). Shutdown blocks over several hours are a later refinement.
+- **L1:** thermal decisions are made one hour at a time. Effects across hours enter only through *R* and the shutdown-allowed check. A unit committed for a long DA run can only shut down in ID at the end of the run (where later hours are off), although it can always reduce to min load (D). A run no longer than `min_operating_time` can never be exited in ID, only reduced to min load. Shutdown blocks over several hours are a later refinement.
 - **L2:** a bid that clears only partly at exactly its switch price can lose a little, bounded by the difference between the incremental cost and the switch price over that partial volume.
 - **L3:** the naive ID price forecast ignores DA commitment effects (start-ups already paid for, storage state of charge).
 - **L4:** the forecast error correlations are uncalibrated assumptions.
 - **L5:** the battery has no per-market forecast and no correction bids; its feasibility relies on state-of-charge-aware bid construction.
+- **L6:** start-block families removed by `complex_clearing`'s surplus loop are not re-admitted; with idle thermal capacity this can leave demand unserved at the cap price. In `example_01k` this is the dominant cause of the 27 DA / 22 ID cap hours and of the 176.7 MWh of unserved demand. Changing the clearing or the S/F pricing is a design decision outside v1.
 
 ## 12. Backward compatibility and regression check
 

@@ -44,7 +44,7 @@ Output                                Meaning
 ``energy_deviation``                  Physical output minus position.
 ====================================  ====================================================================================
 
-The costs are attributed sequentially: each market is charged with the change in cost of the whole position that its volume causes, for example the start-up cost a unit avoids by buying back a position on a later market is credited to that market. The per-market profits therefore add up to the total cashflow minus the cost of the final position. Demand units have no operating cost; their profit equals their payments.
+The costs are attributed sequentially: each market is charged with the change in cost of the whole position that its volume causes, for example the start-up cost a unit avoids by buying back a position on a later market is credited to that market. The per-market profits therefore add up to the total cashflow minus the cost of the final position. Demand units have no operating cost; their profit equals their payments. The profits are measured on positions: the costs of physically running differently from the position (e.g. when minimum operating or down times are enforced at delivery) appear in ``energy_generation_costs``, not in the per-market profits. When summing exported columns, do not select them by the substring ``total_costs``: that also matches the strategy-level output ``total_costs`` written by several strategies (e.g. ``powerplant_energy_heuristic_flexable`` and its derivatives), which covers costs that are also in ``energy_total_costs_<m>``, so they would be counted twice.
 
 Forced corrections
 ------------------

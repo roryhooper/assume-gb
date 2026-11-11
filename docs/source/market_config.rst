@@ -154,6 +154,8 @@ The first day of the simulation is then a lead day without deliveries: the first
 .. note::
    The ID auction trades only changes to the DA positions, so some hours can have little or no trading, and their prices are poorly defined. Flag hours without trades rather than reading their prices literally.
 
+   Prices at the cap are not necessarily physical scarcity. With ``complex_clearing`` and the thermal strategy ``powerplant_energy_heuristic_flexable_hourly_linked``, a start block removed for its negative surplus is not re-admitted, which can leave demand unserved at the cap while thermal capacity is idle (see the limitations in :doc:`bidding_strategies`). Forecast errors can also push a DA hour to the cap, with ID correcting back down.
+
 Example Configuration - CRM Market
 ----------------------------------
 
