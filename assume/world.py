@@ -867,6 +867,17 @@ class World:
             await asyncio.sleep(0)
             await tasks_complete_or_sleeping(c, except_sources=[])
 
+            # flush the final delivery period while the output agent is still running:
+            # agents stop concurrently on shutdown, so a flush from on_stop can arrive too late
+            for operator in self.unit_operators.values():
+                for product_type in {
+                    market.product_type
+                    for market in operator.registered_markets.values()
+                } | set(operator.valid_orders.keys()):
+                    operator.write_actual_dispatch(product_type)
+            await asyncio.sleep(0)
+            await tasks_complete_or_sleeping(c, except_sources=[])
+
             pbar.close()
 
     def run(self):
