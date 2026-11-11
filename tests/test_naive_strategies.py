@@ -416,13 +416,11 @@ def test_demand_single_market_unchanged():
         market_mechanism="not needed",
         market_products=[MarketProduct(timedelta(hours=1), 1, timedelta(hours=1))],
     )
-    products = _hour_products()
-    old = EnergyNaiveStrategy().calculate_bids(dem, mc, products)
-    new = DemandEnergyNaiveStrategy().calculate_bids(dem, mc, products)
+    new = DemandEnergyNaiveStrategy().calculate_bids(dem, mc, _hour_products())
     assert len(new) == 1
     assert new[0]["volume"] == -1000
-    assert new[0]["price"] == 3000
-    assert new == old or [b["volume"] for b in old] == [-1000]
+    assert new[0]["price"] == dem.price.at[start] == 3000
+    assert new[0]["start_time"] == start
 
 
 def test_demand_overbought_sells_at_floor():
@@ -439,6 +437,49 @@ def test_demand_underbought_buys_at_wtp():
     assert len(bids) == 1
     assert bids[0]["volume"] == pytest.approx(-30)
     assert bids[0]["price"] == 3000
+
+
+_CAP_MC = MarketConfig(
+    market_id="CRM_pos",
+    product_type="capacity_pos",
+    opening_hours=rr.rrule(rr.HOURLY, dtstart=start, until=end),
+    opening_duration=rd(hours=1),
+    market_mechanism="pay_as_clear",
+    market_products=[MarketProduct(rd(hours=1), 1, rd(hours=1))],
+    maximum_bid_price=3000.0,
+    minimum_bid_price=-500.0,
+)
+
+
+def test_capacity_market_demand_uses_legacy_path():
+    dem = _demand(position=None, forecast=-900)
+    dem.outputs["capacity_pos"].loc[start : start + timedelta(hours=3)] = -100
+    bids = EnergyNaiveStrategy().calculate_bids(dem, _CAP_MC, _hour_products())
+    # legacy: demand minus realised energy output, priced at the unit price,
+    # no correction bid, no (0, 0) zeroing (forecast -900 is ignored)
+    assert len(bids) == 1
+    assert bids[0]["volume"] == -1000
+    assert bids[0]["price"] == dem.price.at[start]
+
+
+def test_capacity_market_powerplant_uses_legacy_path():
+    pp = _renewable(position=300, id_availability=220)
+    pp.outputs["capacity_pos"].loc[start : start + timedelta(hours=3)] = 50
+    bids = EnergyNaiveStrategy().calculate_bids(pp, _CAP_MC, _hour_products())
+    mc = pp.calculate_marginal_cost(start, 0)
+    lo, hi = pp.calculate_min_max_power(start, start + timedelta(hours=1))
+    expected = pp.calculate_ramp(
+        pp.get_operation_time(start),
+        pp.get_output_before(start),
+        hi[0],
+        pp.outputs["energy"].at[start],
+    )
+    assert len(bids) == (1 if expected else 0)
+    assert all(b["volume"] > 0 for b in bids)
+    assert not [b for b in bids if b["price"] == _CAP_MC.maximum_bid_price]
+    for b in bids:
+        assert b["volume"] == pytest.approx(expected)
+        assert b["price"] == pytest.approx(mc)
 
 
 if __name__ == "__main__":

@@ -65,7 +65,7 @@ bidding_strategies: dict[str, type[BaseStrategy | UnitOperatorStrategy]] = {
     "powerplant_energy_naive": EnergyNaiveStrategy,
     "demand_energy_naive": DemandEnergyNaiveStrategy,
     "powerplant_energy_naive_balancing": EnergyNaiveStrategy,
-    "demand_energy_naive_balancing": EnergyNaiveStrategy,
+    "demand_energy_naive_balancing": DemandEnergyNaiveStrategy,
     "demand_energy_heuristic_elastic": EnergyHeuristicElasticStrategy,
     "exchange_energy_naive": ExchangeEnergyNaiveStrategy,
     "demand_energy_naive_otc": EnergyNaiveOtcStrategy,

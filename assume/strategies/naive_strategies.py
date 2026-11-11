@@ -42,16 +42,18 @@ class EnergyNaiveStrategy(MinMaxStrategy):
         op_time = unit.get_operation_time(start)
         nodal = "node" in market_config.additional_fields
         # forced position corrections and the economic range are only used on
-        # non-nodal markets (nodal/redispatch markets have their own strategies)
+        # non-nodal energy markets (nodal/redispatch and capacity markets keep the
+        # legacy behaviour)
+        position_aware = not nodal and market_config.product_type == "energy"
         min_power_values, max_power_values = unit.calculate_min_max_power(
             start,
             end_all,
-            market_id=None if nodal else market_config.market_id,
+            market_id=market_config.market_id if position_aware else None,
         )  # minimum and maximum power output of the unit between the start time of the first product and the end time of the last product
 
         bids = (
             []
-            if nodal
+            if not position_aware
             else self.calculate_correction_bids(unit, market_config, product_tuples)
         )
         for product, min_power, max_power in zip(
@@ -83,7 +85,7 @@ class EnergyNaiveStrategy(MinMaxStrategy):
             if nodal:
                 bids[-1]["max_power"] = unit.max_power if volume > 0 else unit.min_power
                 bids[-1]["min_power"] = min_power if volume > 0 else unit.max_power
-            elif min_power < 0:
+            elif position_aware and min_power < 0:
                 # voluntary curtailment: capacity to reduce the held position
                 bids.append(
                     {

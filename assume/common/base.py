@@ -951,7 +951,7 @@ class BaseStrategy:
         Returns:
             Orderbook: The correction bids (no bid where the correction is zero).
         """
-        if not product_tuples:
+        if not product_tuples or market_config.product_type != "energy":
             return []
         correction = unit.calculate_position_correction(
             product_tuples[0][0], product_tuples[-1][1], market_config.market_id
