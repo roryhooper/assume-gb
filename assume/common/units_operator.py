@@ -392,11 +392,13 @@ class UnitsOperator(Role):
             unit.outputs["energy_deviation"].loc[start:now] = deviation
             total_deviation = float(np.abs(deviation).sum())
             if total_deviation > 1e-6:
-                logger.warning(
+                # per window at debug level; one summary per unit at the end of the
+                # run (log_deviation_summary)
+                logger.debug(
                     "unit %s could not deliver its market position in %s - %s: "
                     "total absolute deviation %.2f MWh",
                     unit_id,
-                    start,
+                    max(start, unit.index[0]),
                     now,
                     total_deviation,
                 )
@@ -439,7 +441,30 @@ class UnitsOperator(Role):
             market.product_type for market in self.registered_markets.values()
         } | set(self.valid_orders.keys()):
             self.write_actual_dispatch(product_type)
+        self.log_deviation_summary()
         await super().on_stop()
+
+    def log_deviation_summary(self) -> None:
+        """
+        Logs one summary per unit whose delivery deviated from its market position.
+
+        The deviation per hour is ``energy_deviation`` (physical output minus
+        position), see :meth:`get_actual_dispatch`.
+        """
+        for unit_id, unit in self.units.items():
+            if "energy_deviation" not in unit.outputs:
+                continue
+            deviation = np.abs(np.asarray(unit.outputs["energy_deviation"].data))
+            total = float(deviation.sum())
+            if total <= 1e-6:
+                continue
+            logger.info(
+                "unit %s could not deliver its market position in %d hours: "
+                "total absolute deviation %.2f MWh (see energy_deviation)",
+                unit_id,
+                int((deviation > 1e-6).sum()),
+                total,
+            )
 
     def write_actual_dispatch(self, product_type: str) -> None:
         """

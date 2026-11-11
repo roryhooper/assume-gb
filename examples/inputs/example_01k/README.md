@@ -49,7 +49,7 @@ DA uses forecasts with errors. A DA over-forecast of demand or under-forecast of
 
 ### Expected deviations
 
-`energy_deviation` is not exactly zero in this example and the `UnitsOperator` logs warnings about it. Residual deviations come from:
+`energy_deviation` is not exactly zero in this example; at the end of the run the `UnitsOperator` logs one summary per affected unit (per-window details at `DEBUG` level). Residual deviations come from:
 
 - thermal units, which decide one hour at a time: minimum operating and down times are enforced at delivery, which can override unsold hours (the hard coal unit shows about 2.7 GWh over the week);
 - small corrections for which the ID has no counterparty;

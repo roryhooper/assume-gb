@@ -214,7 +214,7 @@ async def test_energy_deviation_written(pp_operator: UnitsOperator):
     assert unit.outputs["energy_DA"].at[t1] == 100
 
 
-async def test_deviation_warning(pp_operator: UnitsOperator, caplog):
+async def test_deviation_window_log_is_debug(pp_operator: UnitsOperator, caplog):
     unit = pp_operator.units["testpp"]
     clock = pp_operator.context.context.clock
     t2 = start + rd(hours=2)
@@ -222,19 +222,76 @@ async def test_deviation_warning(pp_operator: UnitsOperator, caplog):
     # no position -> no deviation -> silent
     last = clock.time
     clock.set_time(clock.time + 3600)
-    with caplog.at_level("WARNING", logger="assume.common.units_operator"):
+    with caplog.at_level("DEBUG", logger="assume.common.units_operator"):
         pp_operator.get_actual_dispatch("energy", last)
     assert "could not deliver" not in caplog.text
 
-    # position above availability -> one aggregated warning for the unit
+    # position above availability -> one aggregated debug message for the window,
+    # nothing at info level or above
     _set_position(unit, t2, 100)
     last = clock.time
     clock.set_time(clock.time + 3600)
-    with caplog.at_level("WARNING", logger="assume.common.units_operator"):
+    with caplog.at_level("DEBUG", logger="assume.common.units_operator"):
         pp_operator.get_actual_dispatch("energy", last)
+    records = [r for r in caplog.records if "could not deliver" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelname == "DEBUG"
+    assert "testpp" in records[0].getMessage()
+    assert "20.00 MWh" in records[0].getMessage()
+
+
+async def test_first_deviation_window_starts_at_index(
+    pp_operator: UnitsOperator, caplog
+):
+    unit = pp_operator.units["testpp"]
+    clock = pp_operator.context.context.clock
+    _set_position(unit, start, 100)
+    clock.set_time(clock.time + 3600)
+    # the first export of a run starts from timestamp 0
+    with caplog.at_level("DEBUG", logger="assume.common.units_operator"):
+        pp_operator.get_actual_dispatch("energy", 0)
     msgs = [r.getMessage() for r in caplog.records if "could not deliver" in r.message]
     assert len(msgs) == 1
-    assert "testpp" in msgs[0] and "20.00 MWh" in msgs[0]
+    assert "1970" not in msgs[0]
+    assert str(start) in msgs[0]
+
+
+async def test_deviation_summary_once_per_unit_on_stop(
+    pp_operator: UnitsOperator, caplog
+):
+    unit = pp_operator.units["testpp"]
+    clock = pp_operator.context.context.clock
+    pp_operator.context.schedule_instant_message = lambda **kw: None
+    pp_operator.last_sent_dispatch["energy"] = clock.time
+    for hours in (1, 2):
+        _set_position(unit, start + rd(hours=hours), 100)
+        clock.set_time(clock.time + 3600)
+        pp_operator.write_actual_dispatch("energy")
+
+    with caplog.at_level("INFO", logger="assume.common.units_operator"):
+        await pp_operator.on_stop()
+    msgs = [
+        r
+        for r in caplog.records
+        if r.levelname == "INFO" and "testpp" in r.getMessage()
+    ]
+    assert len(msgs) == 1
+    assert "40.00 MWh" in msgs[0].getMessage()
+    assert "2 hours" in msgs[0].getMessage()
+
+
+async def test_no_deviation_summary_without_deviation(
+    pp_operator: UnitsOperator, caplog
+):
+    clock = pp_operator.context.context.clock
+    last = clock.time
+    clock.set_time(clock.time + 3600)
+    pp_operator.get_actual_dispatch("energy", last)
+    pp_operator.context.schedule_instant_message = lambda **kw: None
+
+    with caplog.at_level("INFO", logger="assume.common.units_operator"):
+        await pp_operator.on_stop()
+    assert "deviat" not in caplog.text
 
 
 async def test_dispatch_export_includes_profit_and_deviation_not_strategy_profit(
