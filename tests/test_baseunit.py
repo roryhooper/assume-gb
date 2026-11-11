@@ -381,3 +381,31 @@ def test_capacity_product_not_attributed(cost_unit):
     cost_unit.calculate_cashflow("capacity_pos", [order])
     assert "capacity_pos_total_costs_CAP" not in cost_unit.outputs
     assert "capacity_pos_profit_CAP" not in cost_unit.outputs
+
+
+def test_minmax_unit_without_start_cost_attributes_has_no_start_cost():
+    """SupportsMinMax units that define no start-up parameters (DSM units, custom
+    units) must not crash in the per-market cost attribution: missing attributes
+    mean no start-up cost."""
+    from tests.conftest import MockMinMaxUnit
+
+    index = pd.date_range("2023-01-01", periods=4, freq="h")
+    unit = MockMinMaxUnit(forecaster=PowerplantForecaster(index, availability=1))
+    mc = MarketConfig(market_id="EOM", product_type="energy")
+    order = {
+        "start_time": unit.index[1],
+        "end_time": unit.index[1] + unit.index.freq,
+        "accepted_volume": 5.0,
+        "accepted_price": 10,
+        "market_id": "EOM",
+        "only_hours": None,
+        "price": 1,
+        "volume": 5,
+    }
+    unit.set_dispatch_plan(mc, [order])
+
+    assert unit.get_starting_costs(-1) == 0
+    assert unit.get_starting_costs(-100) == 0
+    # running cost only: 5 MW at a marginal cost of 3
+    assert unit.outputs["energy_total_costs_EOM"][unit.index[1]] == pytest.approx(15)
+    assert unit.outputs["energy_total_costs_EOM"].data.sum() == pytest.approx(15)

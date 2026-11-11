@@ -404,6 +404,13 @@ class SupportsMinMax(BaseUnit):
     emission_factor: float
     min_operating_time: int = 0
     min_down_time: int = 0
+    # start-up parameters: units that do not set them (e.g. DSM units) have no
+    # start-up cost; PowerPlant sets its own in __init__
+    hot_start_cost: float = 0
+    warm_start_cost: float = 0
+    cold_start_cost: float = 0
+    downtime_hot_start: float = 0
+    downtime_warm_start: float = 0
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
