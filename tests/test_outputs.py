@@ -168,3 +168,26 @@ def test_output_write_flows():
 
     output_writer.handle_output_message(content, meta)
     assert len(output_writer.write_buffers["grid_flows"]) == 1, "grid_flows"
+
+
+def test_check_columns_mixed_case_new_column(tmp_path, caplog):
+    import pandas as pd
+    from sqlalchemy import inspect
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'cols.db'}")
+    output_writer = WriteOutput(
+        "test_sim", datetime(2020, 1, 1), datetime(2020, 1, 2), engine
+    )
+    output_writer.db = engine
+    first = pd.DataFrame({"energy_cashflow_DA": [1.0]}, index=pd.Index([0], name="t"))
+    first.to_sql("unit_dispatch", engine, if_exists="append")
+    # existing mixed-case column must not be re-added, the new one must be
+    second = pd.DataFrame(
+        {"energy_cashflow_DA": [1.0], "energy_cashflow_ID": [2.0]},
+        index=pd.Index([1], name="t"),
+    )
+    output_writer.check_columns("unit_dispatch", second)
+    assert "Error converting column" not in caplog.text
+    columns = [c["name"] for c in inspect(engine).get_columns("unit_dispatch")]
+    assert columns.count("energy_cashflow_DA") == 1
+    assert "energy_cashflow_ID" in columns

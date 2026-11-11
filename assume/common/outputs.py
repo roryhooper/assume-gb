@@ -620,7 +620,7 @@ class WriteOutput(Role):
         with self.db.begin() as db:
             # Read table into Pandas DataFrame
             query = f"select * from {table} where 1=0"
-            db_columns = pd.read_sql(query, db).columns
+            db_columns = [c.lower() for c in pd.read_sql(query, db).columns]
 
         for column in df.columns:
             if column.lower() not in db_columns:
