@@ -360,3 +360,46 @@ class EnergyHeuristicFlexableLinkedStrategy(EnergyHeuristicFlexableStrategy):
         bids = self.remove_empty_bids(bids)
 
         return bids
+
+
+def determine_on_case(
+    cost_m: float,
+    cost_U: float,
+    m: float,
+    U: float,
+    R: float,
+    shutdown_allowed: bool,
+) -> tuple[str, dict[str, float]]:
+    """
+    Switch prices and bidding sub-case of a running thermal unit for one hour.
+
+    The hourly profit at the three allowed extremes is linear in the price *p*:
+    off ``-R``, min load ``p * m - cost_m``, max ``p * U - cost_U``. The switch
+    prices are where the upper envelope of these lines changes.
+
+    Args:
+        cost_m (float): Running cost at min load ``m``.
+        cost_U (float): Running cost at the available max ``U``.
+        m (float): Min load.
+        U (float): Available max (ramp-limited).
+        R (float): Restart penalty (start-up cost after the minimum down time).
+        shutdown_allowed (bool): Whether shutting down in this hour is allowed.
+
+    Returns:
+        tuple[str, dict[str, float]]: ``"on-a"`` if shutdown is not allowed,
+        ``"on-c"`` if ``p_0m < p_mU`` (min load is best between the two),
+        otherwise ``"on-b"``; and the prices ``p_mU = (cost_U - cost_m) / (U - m)``,
+        ``p_0U = (cost_U - R) / U`` and ``p_0m = (cost_m - R) / m``.
+        With ``U == m`` there is no flexible range and ``p_mU = p_0U``; with
+        ``m <= 0`` running at min load always beats a shutdown and ``p_0m = -inf``.
+    """
+    p_0U = (cost_U - R) / U if U > 0 else float("inf")
+    p_mU = (cost_U - cost_m) / (U - m) if U != m else p_0U
+    p_0m = (cost_m - R) / m if m > 0 else float("-inf")
+    prices = {"p_mU": p_mU, "p_0U": p_0U, "p_0m": p_0m}
+
+    if not shutdown_allowed:
+        return "on-a", prices
+    if p_0m < p_mU:
+        return "on-c", prices
+    return "on-b", prices
