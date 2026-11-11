@@ -108,7 +108,7 @@ CONFIG_YAML = """\
 
 base:
   start_date: 2019-03-17 00:00
-  end_date: 2019-03-25 00:00
+  end_date: 2019-03-24 23:00
   time_step: 1h
   save_frequency_hours: 24
 
@@ -117,7 +117,7 @@ base:
       operator: DA_operator
       product_type: energy
       start_date: 2019-03-17 09:00
-      end_date: 2019-03-23 10:00
+      end_date: 2019-03-25 00:00
       products:
         - duration: 1h
           count: 24
@@ -138,7 +138,7 @@ base:
       operator: ID_operator
       product_type: energy
       start_date: 2019-03-17 22:00
-      end_date: 2019-03-23 23:00
+      end_date: 2019-03-25 00:00
       products:
         - duration: 1h
           count: 24
