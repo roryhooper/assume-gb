@@ -214,6 +214,29 @@ async def test_energy_deviation_written(pp_operator: UnitsOperator):
     assert unit.outputs["energy_DA"].at[t1] == 100
 
 
+async def test_deviation_warning(pp_operator: UnitsOperator, caplog):
+    unit = pp_operator.units["testpp"]
+    clock = pp_operator.context.context.clock
+    t2 = start + rd(hours=2)
+
+    # no position -> no deviation -> silent
+    last = clock.time
+    clock.set_time(clock.time + 3600)
+    with caplog.at_level("WARNING", logger="assume.common.units_operator"):
+        pp_operator.get_actual_dispatch("energy", last)
+    assert "could not deliver" not in caplog.text
+
+    # position above availability -> one aggregated warning for the unit
+    _set_position(unit, t2, 100)
+    last = clock.time
+    clock.set_time(clock.time + 3600)
+    with caplog.at_level("WARNING", logger="assume.common.units_operator"):
+        pp_operator.get_actual_dispatch("energy", last)
+    msgs = [r.getMessage() for r in caplog.records if "could not deliver" in r.message]
+    assert len(msgs) == 1
+    assert "testpp" in msgs[0] and "20.00 MWh" in msgs[0]
+
+
 async def test_dispatch_export_includes_profit_and_deviation_not_strategy_profit(
     pp_operator: UnitsOperator,
 ):

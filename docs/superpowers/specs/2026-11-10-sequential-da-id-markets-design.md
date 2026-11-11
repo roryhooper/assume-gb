@@ -483,7 +483,7 @@ They are documented as assumptions in the script.
 - **Integration (`@pytest.mark.slow`):** a full run of `small_sequential_da_id` checks that:
   - both markets clear every day;
   - no thermal unit ends between 0 and min load;
-  - |`energy_deviation`| ≈ 0;
+  - deviations behave per §3.4: demand and solar have none; every unit's hourly |`energy_deviation`| is within its capacity; per-unit weekly totals stay within pinned regression bounds. (Amended 2026-11-11: the original "≈ 0" claim contradicted §3.4, L1 and L5 — residual deviations are expected from uncleared corrections when the ID lacks counterparties, thermal min up/down enforcement over unsold hours, and storage joint-feasibility gaps under partial acceptance. They are recorded, warned about, and bounded by the test.)
   - per-market profits add up to total profit;
   - the battery's state of charge stays within bounds.
 

@@ -388,7 +388,18 @@ class UnitsOperator(Role):
             current_dispatch = unit.execute_current_dispatch(start, now)
             end = now
             physical = np.asarray(unit.outputs["energy"].loc[start:now], dtype=float)
-            unit.outputs["energy_deviation"].loc[start:now] = physical - position
+            deviation = physical - position
+            unit.outputs["energy_deviation"].loc[start:now] = deviation
+            total_deviation = float(np.abs(deviation).sum())
+            if total_deviation > 1e-6:
+                logger.warning(
+                    "unit %s could not deliver its market position in %s - %s: "
+                    "total absolute deviation %.2f MWh",
+                    unit_id,
+                    start,
+                    now,
+                    total_deviation,
+                )
             dispatch = {"power": current_dispatch}
             unit.calculate_generation_cost(start, now, "energy")
             valid_outputs = [
