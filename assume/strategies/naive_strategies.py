@@ -40,11 +40,20 @@ class EnergyNaiveStrategy(MinMaxStrategy):
             start
         )  # power output of the unit before the start time of the first product
         op_time = unit.get_operation_time(start)
+        nodal = "node" in market_config.additional_fields
+        # forced position corrections and the economic range are only used on
+        # non-nodal markets (nodal/redispatch markets have their own strategies)
         min_power_values, max_power_values = unit.calculate_min_max_power(
-            start, end_all
+            start,
+            end_all,
+            market_id=None if nodal else market_config.market_id,
         )  # minimum and maximum power output of the unit between the start time of the first product and the end time of the last product
 
-        bids = []
+        bids = (
+            []
+            if nodal
+            else self.calculate_correction_bids(unit, market_config, product_tuples)
+        )
         for product, min_power, max_power in zip(
             product_tuples, min_power_values, max_power_values
         ):
@@ -71,9 +80,21 @@ class EnergyNaiveStrategy(MinMaxStrategy):
                 }
             )
 
-            if "node" in market_config.additional_fields:
+            if nodal:
                 bids[-1]["max_power"] = unit.max_power if volume > 0 else unit.min_power
                 bids[-1]["min_power"] = min_power if volume > 0 else unit.max_power
+            elif min_power < 0:
+                # voluntary curtailment: capacity to reduce the held position
+                bids.append(
+                    {
+                        "start_time": start,
+                        "end_time": product[1],
+                        "only_hours": product[2],
+                        "price": marginal_cost,
+                        "volume": min_power,
+                        "node": unit.node,
+                    }
+                )
 
             previous_power = volume + current_power
             if previous_power > 0:
@@ -81,10 +102,31 @@ class EnergyNaiveStrategy(MinMaxStrategy):
             else:
                 op_time = min(op_time, 0) - 1
 
-        if "node" in market_config.additional_fields:
+        if nodal:
             return bids
         else:
             return self.remove_empty_bids(bids)
+
+
+class DemandEnergyNaiveStrategy(EnergyNaiveStrategy):
+    """
+    Naive strategy for demand units on sequential markets.
+
+    Behaves like :class:`EnergyNaiveStrategy`, but prices the forced position
+    correction at the demand's willingness to pay when buying and at the market
+    floor when selling surplus back.
+    """
+
+    def correction_price(
+        self,
+        unit: SupportsMinMax,
+        market_config: MarketConfig,
+        start,
+        volume: float,
+    ) -> float:
+        if volume < 0:
+            return unit.price.at[start]
+        return market_config.minimum_bid_price
 
 
 class EnergyNaiveProfileStrategy(MinMaxStrategy):

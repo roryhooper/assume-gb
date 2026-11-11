@@ -19,6 +19,7 @@ from assume.strategies.flexable_storage import (
     StorageCapacityHeuristicBalancingPosStrategy,
 )
 from assume.strategies.naive_strategies import (
+    DemandEnergyNaiveStrategy,
     DsmEnergyOptimizationStrategy,
     EnergyNaiveProfileStrategy,
     DsmEnergyNaiveRedispatchStrategy,
@@ -62,7 +63,7 @@ deprecated_bidding_strategies: dict[str, type[BaseStrategy | UnitOperatorStrateg
 
 bidding_strategies: dict[str, type[BaseStrategy | UnitOperatorStrategy]] = {
     "powerplant_energy_naive": EnergyNaiveStrategy,
-    "demand_energy_naive": EnergyNaiveStrategy,
+    "demand_energy_naive": DemandEnergyNaiveStrategy,
     "powerplant_energy_naive_balancing": EnergyNaiveStrategy,
     "demand_energy_naive_balancing": EnergyNaiveStrategy,
     "demand_energy_heuristic_elastic": EnergyHeuristicElasticStrategy,

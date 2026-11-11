@@ -11,6 +11,7 @@ from dateutil import rrule as rr
 from assume.common.forecaster import DemandForecaster
 from assume.common.market_objects import MarketConfig, MarketProduct
 from assume.strategies import EnergyHeuristicElasticStrategy, EnergyNaiveStrategy
+from assume.strategies.naive_strategies import DemandEnergyNaiveStrategy
 from assume.units.demand import Demand
 
 
@@ -64,7 +65,7 @@ def test_demand():
 
 
 def test_demand_series():
-    strategies = {"EOM": EnergyNaiveStrategy()}
+    strategies = {"EOM": DemandEnergyNaiveStrategy()}
 
     index = pd.date_range(
         start=datetime(2023, 7, 1),

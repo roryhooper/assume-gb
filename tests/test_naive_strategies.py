@@ -11,7 +11,11 @@ from dateutil import rrule as rr
 from dateutil.relativedelta import relativedelta as rd
 
 from assume.common.base import BaseStrategy
-from assume.common.forecaster import UnitForecaster
+from assume.common.forecaster import (
+    DemandForecaster,
+    PowerplantForecaster,
+    UnitForecaster,
+)
 from assume.common.market_objects import MarketConfig, MarketProduct
 from assume.common.utils import get_available_products
 from assume.markets.base_market import MarketRole
@@ -20,7 +24,12 @@ from assume.strategies import (
     EnergyNaiveProfileStrategy,
     EnergyNaiveStrategy,
 )
-from assume.strategies.naive_strategies import EnergyNaiveRedispatchStrategy
+from assume.strategies.naive_strategies import (
+    DemandEnergyNaiveStrategy,
+    EnergyNaiveRedispatchStrategy,
+)
+from assume.units.demand import Demand
+from assume.units.powerplant import PowerPlant
 from tests.conftest import MockMinMaxUnit
 
 start = datetime(2023, 7, 1)
@@ -296,6 +305,140 @@ def test_correction_bid_at_cap_survives_market_validation(mock_supports_minmax, 
     assert bids[0]["price"] == 3000.0
     assert bids[1]["price"] == -500.0
     assert not [r for r in caplog.records if "price" in r.getMessage()]
+
+
+_ID_MC = MarketConfig(
+    market_id="ID",
+    opening_hours=rr.rrule(rr.HOURLY, dtstart=start, until=end),
+    opening_duration=rd(hours=1),
+    market_mechanism="pay_as_clear",
+    market_products=[MarketProduct(rd(hours=1), 1, rd(hours=1))],
+    maximum_bid_price=3000.0,
+    minimum_bid_price=-500.0,
+)
+
+
+def _hour_products(n=1):
+    return [
+        (start + timedelta(hours=h), start + timedelta(hours=h + 1), None)
+        for h in range(n)
+    ]
+
+
+def _renewable(position, id_availability):
+    index = pd.date_range(start, periods=4, freq="h")
+    forecaster = PowerplantForecaster(
+        index,
+        availability=1,
+        availability_forecast={"ID": [id_availability / 1000] * 4},
+        fuel_prices={"lignite": 10, "co2": 10},
+        market_prices={"EOM": 0},
+    )
+    pp = PowerPlant(
+        id="ren",
+        unit_operator="uo",
+        technology="wind",
+        bidding_strategies={"ID": EnergyNaiveStrategy()},
+        index=forecaster.index,
+        max_power=1000,
+        min_power=0,
+        efficiency=1,
+        fuel_type="lignite",
+        emission_factor=0,
+        forecaster=forecaster,
+    )
+    pp.outputs["energy"].loc[index[0] : index[-1]] = position
+    return pp
+
+
+def test_renewable_forced_buyback():
+    pp = _renewable(position=300, id_availability=220)
+    bids = EnergyNaiveStrategy().calculate_bids(pp, _ID_MC, _hour_products())
+    mc = pp.calculate_marginal_cost(start, 0)
+    forced = [b for b in bids if b["price"] == _ID_MC.maximum_bid_price]
+    assert [b["volume"] for b in forced] == pytest.approx([-80])
+    curtail = [b for b in bids if b["price"] == mc]
+    assert [b["volume"] for b in curtail] == pytest.approx([-220])
+    assert sum(b["volume"] for b in bids if b["volume"] < 0) == pytest.approx(-300)
+    assert not [b for b in bids if b["volume"] > 0]
+
+
+def test_renewable_voluntary_curtailment():
+    pp = _renewable(position=200, id_availability=400)
+    bids = EnergyNaiveStrategy().calculate_bids(pp, _ID_MC, _hour_products())
+    mc = pp.calculate_marginal_cost(start, 0)
+    buys = [b for b in bids if b["volume"] < 0]
+    assert len(buys) == 1
+    assert buys[0]["volume"] == pytest.approx(-200)
+    assert buys[0]["price"] == pytest.approx(mc)
+    assert not [b for b in bids if b["price"] == _ID_MC.maximum_bid_price]
+
+
+def test_renewable_sells_extra():
+    pp = _renewable(position=200, id_availability=500)
+    bids = EnergyNaiveStrategy().calculate_bids(pp, _ID_MC, _hour_products())
+    mc = pp.calculate_marginal_cost(start, 0)
+    sells = [b for b in bids if b["volume"] > 0]
+    assert len(sells) == 1
+    assert sells[0]["volume"] == pytest.approx(300)
+    assert sells[0]["price"] == pytest.approx(mc)
+
+
+def _demand(position, forecast):
+    index = pd.date_range(start, periods=4, freq="h")
+    forecaster = DemandForecaster(
+        index,
+        demand=-1000,
+        demand_forecast={"ID": [forecast] * 4},
+    )
+    dem = Demand(
+        id="dem",
+        unit_operator="uo",
+        technology="energy",
+        bidding_strategies={"ID": DemandEnergyNaiveStrategy()},
+        max_power=-1000,
+        min_power=0,
+        forecaster=forecaster,
+        price=3000,
+    )
+    if position is not None:
+        dem.outputs["energy"].loc[index[0] : index[-1]] = position
+    return dem
+
+
+def test_demand_single_market_unchanged():
+    dem = _demand(position=None, forecast=-1000)
+    # realised demand -1000 and no position: exactly one bid for the remaining demand
+    mc = MarketConfig(
+        market_id="EOM",
+        opening_hours=rr.rrule(rr.HOURLY),
+        opening_duration=timedelta(hours=1),
+        market_mechanism="not needed",
+        market_products=[MarketProduct(timedelta(hours=1), 1, timedelta(hours=1))],
+    )
+    products = _hour_products()
+    old = EnergyNaiveStrategy().calculate_bids(dem, mc, products)
+    new = DemandEnergyNaiveStrategy().calculate_bids(dem, mc, products)
+    assert len(new) == 1
+    assert new[0]["volume"] == -1000
+    assert new[0]["price"] == 3000
+    assert new == old or [b["volume"] for b in old] == [-1000]
+
+
+def test_demand_overbought_sells_at_floor():
+    dem = _demand(position=-980, forecast=-950)
+    bids = DemandEnergyNaiveStrategy().calculate_bids(dem, _ID_MC, _hour_products())
+    assert len(bids) == 1
+    assert bids[0]["volume"] == pytest.approx(30)
+    assert bids[0]["price"] == _ID_MC.minimum_bid_price
+
+
+def test_demand_underbought_buys_at_wtp():
+    dem = _demand(position=-950, forecast=-980)
+    bids = DemandEnergyNaiveStrategy().calculate_bids(dem, _ID_MC, _hour_products())
+    assert len(bids) == 1
+    assert bids[0]["volume"] == pytest.approx(-30)
+    assert bids[0]["price"] == 3000
 
 
 if __name__ == "__main__":

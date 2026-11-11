@@ -37,7 +37,11 @@ class MockMinMaxUnit(SupportsMinMax):
         self.ramp_up = 400
 
     def calculate_min_max_power(
-        self, start: datetime, end: datetime, product_type="energy"
+        self,
+        start: datetime,
+        end: datetime,
+        product_type="energy",
+        market_id=None,
     ) -> tuple[np.ndarray, np.ndarray]:
         min = FastSeries(value=100, index=self.index).loc[start:end]
         max = FastSeries(value=400, index=self.index).loc[start:end]
