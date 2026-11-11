@@ -102,7 +102,7 @@ def test_no_thermal_position_between_zero_and_min_power(sim):
 
 
 # Residual deviations (physical dispatch minus market position) are designed behaviour:
-#  - spec 3.4: ID correction bids that find no counterparty (wind, divisible volume
+#  - spec 5.5: ID correction bids that find no counterparty (wind, divisible volume
 #    needed while the only ID sellers are thermal block bids);
 #  - spec L1: min up/down time and ramps are enforced over unsold hours on execution;
 #  - spec L5: storage bids across hours are not jointly SOC-feasible.
@@ -136,7 +136,10 @@ def test_deviations_are_bounded(sim):
             abs(getattr(unit, "max_power_discharge", 0.0) or 0.0),
         )
 
-    # units with certain realisation are exactly deliverable
+    # Solar's realisation is certain and its corrections always clear. For the demand
+    # the zero deviation holds by construction (Demand.execute_current_dispatch takes
+    # the position as its physical consumption), so this is NOT a served-load check:
+    # see test_cap_hours_and_unserved_demand for the demand that was not bought.
     for name in ["demand_DE", "Solar"]:
         dev = delivery.loc[delivery["unit"] == name, "energy_deviation"]
         assert dev.abs().max() < TOL, name
@@ -148,6 +151,43 @@ def test_deviations_are_bounded(sim):
             f"{name}: total |deviation| {dev.sum():.2f} exceeds snapshot "
             f"{DEVIATION_SNAPSHOT[name]}"
         )
+
+
+# Known limitation (spec L6): when a start-block family of a thermal unit (start S
+# with its linked flexible F) clears with F at the chord price setting the hourly
+# price, the family's surplus is negative, and complex_clearing's surplus loop
+# removes the block and re-solves. The removal is permanent, so the unit is not
+# re-admitted even when the remaining supply cannot meet demand: idle thermal
+# capacity then leaves demand unbought at the 3000 EUR/MWh cap. This, not forecast
+# error, is the dominant cause of the cap hours below (every unserved hour clears ID
+# at the cap). The values are exact snapshots of this deterministic run.
+CAP_PRICE = 3000
+CAP_HOURS_SNAPSHOT = {"DA": 27, "ID": 22}
+UNSERVED_MWH_SNAPSHOT = 176.67
+UNSERVED_HOURS_SNAPSHOT = 13
+
+
+@pytest.mark.slow
+def test_cap_hours_and_unserved_demand(sim):
+    _, tables = sim
+    meta = tables["market_meta"]
+    for market, expected in CAP_HOURS_SNAPSHOT.items():
+        prices = meta.loc[meta["market_id"] == market, "price"]
+        assert int((prices >= CAP_PRICE - TOL).sum()) == expected, market
+
+    # unserved = realised demand - final demand position (both markets)
+    realised = pd.read_csv(
+        "examples/inputs/example_01k/demand_df.csv", index_col=0, parse_dates=True
+    )["demand_DE"].abs()
+    realised = realised[realised.index >= DELIVERY_DAYS[0]]
+    bought = -_positions(tables)["demand_DE"].reindex(realised.index, fill_value=0.0)
+    unserved = realised - bought
+    assert unserved.min() >= -TOL, "demand bought more than its realised load"
+    assert unserved.sum() == pytest.approx(UNSERVED_MWH_SNAPSHOT, abs=0.01)
+    assert int((unserved > TOL).sum()) == UNSERVED_HOURS_SNAPSHOT
+    # every unserved hour clears ID at the cap
+    id_prices = meta[meta["market_id"] == "ID"].set_index("product_start")["price"]
+    assert (id_prices.reindex(unserved[unserved > TOL].index) >= CAP_PRICE - TOL).all()
 
 
 @pytest.mark.slow
