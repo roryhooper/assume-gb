@@ -907,6 +907,72 @@ class BaseStrategy:
             Orderbook: The bids.
         """
 
+    def correction_price(
+        self,
+        unit: BaseUnit,
+        market_config: MarketConfig,
+        start: datetime,
+        volume: float,
+    ) -> float:
+        """
+        Price for a forced position-correction bid. Override to customise.
+
+        Buying (volume < 0) bids at the maximum bid price, selling (volume > 0)
+        at the minimum bid price, so the correction is accepted regardless of
+        the clearing price.
+
+        Args:
+            unit (BaseUnit): The unit.
+            market_config (MarketConfig): The market configuration.
+            start (datetime): Start of the product.
+            volume (float): Correction volume (negative = buy, positive = sell).
+
+        Returns:
+            float: The bid price.
+        """
+        if volume < 0:
+            return market_config.maximum_bid_price
+        return market_config.minimum_bid_price
+
+    def calculate_correction_bids(
+        self,
+        unit: BaseUnit,
+        market_config: MarketConfig,
+        product_tuples: list[Product],
+    ) -> Orderbook:
+        """
+        Creates one simple bid per product hour with a non-zero forced position correction.
+
+        Args:
+            unit (BaseUnit): The unit.
+            market_config (MarketConfig): The market configuration.
+            product_tuples (list[Product]): The product tuples.
+
+        Returns:
+            Orderbook: The correction bids (no bid where the correction is zero).
+        """
+        if not product_tuples:
+            return []
+        correction = unit.calculate_position_correction(
+            product_tuples[0][0], product_tuples[-1][1], market_config.market_id
+        )
+
+        bids = []
+        for product, c in zip(product_tuples, correction):
+            if c == 0:
+                continue
+            bids.append(
+                {
+                    "start_time": product[0],
+                    "end_time": product[1],
+                    "only_hours": product[2],
+                    "price": self.correction_price(unit, market_config, product[0], c),
+                    "volume": c,
+                    "node": unit.node,
+                }
+            )
+        return bids
+
     def calculate_reward(
         self,
         unit: BaseUnit,

@@ -4,14 +4,17 @@
 
 from datetime import datetime, timedelta
 
+import numpy as np
 import pandas as pd
 import pytest
 from dateutil import rrule as rr
 from dateutil.relativedelta import relativedelta as rd
 
+from assume.common.base import BaseStrategy
 from assume.common.forecaster import UnitForecaster
 from assume.common.market_objects import MarketConfig, MarketProduct
 from assume.common.utils import get_available_products
+from assume.markets.base_market import MarketRole
 from assume.strategies import (
     EnergyHeuristicElasticStrategy,
     EnergyNaiveProfileStrategy,
@@ -242,6 +245,57 @@ def test_naive_redispatch_strategy(
     assert [bids[i]["price"] for i in range(len(bids))] == pytest.approx(
         [3] * len(bids)
     )  # should bid at marginal cost, which are set to 3 in MockMinMaxUnit
+
+
+def _correction_unit(mock_supports_minmax, values):
+    unit = mock_supports_minmax
+    unit.calculate_position_correction = lambda s, e, m: np.array(values, dtype=float)
+    return unit
+
+
+def test_correction_bids_prices_and_signs(mock_market_config, mock_supports_minmax):
+    unit = _correction_unit(mock_supports_minmax, [-80, 30, 0])
+    mc = mock_market_config
+    products = [
+        (start + timedelta(hours=h), start + timedelta(hours=h + 1), None)
+        for h in range(3)
+    ]
+    bids = BaseStrategy().calculate_correction_bids(unit, mc, products)
+    assert len(bids) == 2
+    assert bids[0]["volume"] == -80
+    assert bids[0]["price"] == mc.maximum_bid_price
+    assert bids[0]["start_time"] == products[0][0]
+    assert bids[0]["end_time"] == products[0][1]
+    assert bids[0]["only_hours"] is None
+    assert bids[0]["node"] == unit.node
+    assert bids[1]["volume"] == 30
+    assert bids[1]["price"] == mc.minimum_bid_price
+    assert bids[1]["start_time"] == products[1][0]
+
+
+def test_correction_bid_at_cap_survives_market_validation(mock_supports_minmax, caplog):
+    mc = MarketConfig(
+        market_id="Test",
+        market_mechanism="pay_as_clear",
+        opening_hours=rr.rrule(rr.HOURLY, dtstart=start, until=end),
+        opening_duration=rd(hours=1),
+        market_products=[MarketProduct(rd(hours=1), 1, rd(hours=1))],
+        maximum_bid_price=3000.0,
+        minimum_bid_price=-500.0,
+    )
+    unit = _correction_unit(mock_supports_minmax, [-80, 30])
+    products = [
+        (start + timedelta(hours=h), start + timedelta(hours=h + 1), None)
+        for h in range(2)
+    ]
+    bids = BaseStrategy().calculate_correction_bids(unit, mc, products)
+    role = MarketRole(marketconfig=mc)
+    role.open_auctions = set(products)
+    with caplog.at_level("WARNING"):
+        role.validate_orderbook(bids, ("addr", "agent"))
+    assert bids[0]["price"] == 3000.0
+    assert bids[1]["price"] == -500.0
+    assert not [r for r in caplog.records if "price" in r.getMessage()]
 
 
 if __name__ == "__main__":
