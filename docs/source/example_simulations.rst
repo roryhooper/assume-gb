@@ -53,6 +53,9 @@ Overview of Example Simulations
    * - small_with_directional_zonal_clearing‡
      - example_01j
      - Demonstrates complex clearing with directional transfer capacities between zones.
+   * - small_sequential_da_id
+     - example_01k
+     - One delivery week with sequential day-ahead and intraday auctions (``complex_clearing``), per-market forecasts and the switch-price thermal strategy.
    * - market_study_eom
      - example_01f
      - Showcases comparison of single market to multi market. Case 1 in [3]_

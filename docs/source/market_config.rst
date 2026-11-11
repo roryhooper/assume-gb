@@ -116,6 +116,44 @@ This means that for markets with multiple products, the bidding strategies do co
 Therefore, we do not advise to use markets with multiple products in combination with units that require strong time couling such as storages or dispatchable units when `start_up_times` are considered.
 This is a known limitation in agent-based modelling and does underestimate the risk of infeasible dispatches for power plant operators.
 
+.. _sequential-markets:
+
+Sequential markets
+------------------
+
+Several markets can trade the same delivery period one after another, for example a day-ahead (DA) auction followed by an intraday (ID) auction. Each market is an entry in ``markets_config`` with its own ``market_id``. Nothing limits the number of markets; all per-market logic is keyed by ``market_id`` and processed in the order the markets clear.
+
+**Timing pattern.** A typical setup uses daily auctions that all trade the next day. Each market sets its own ``start_date`` (the first time it opens), ``end_date`` (the last time it can open, so that it does not open for delivery periods beyond the end of the simulation), ``opening_frequency`` and ``opening_duration`` (the bidding window; the market clears when it ends). ``first_delivery`` of the ``MarketProduct`` is measured from the market's opening. The example ``example_01k`` uses:
+
+.. code-block:: yaml
+
+   markets_config:
+     DA:
+       start_date: 2019-03-17 09:00     # opens 09:00, clears 10:00
+       end_date: 2019-03-25 00:00
+       opening_frequency: 24h
+       opening_duration: 1h
+       products:
+         - {duration: 1h, count: 24, first_delivery: 15h}   # delivers 00:00-23:00 of the next day
+       market_mechanism: complex_clearing
+     ID:
+       start_date: 2019-03-17 22:00     # opens 22:00, clears 23:00
+       end_date: 2019-03-25 00:00
+       opening_frequency: 24h
+       opening_duration: 1h
+       products:
+         - {duration: 1h, count: 24, first_delivery: 2h}    # the same 24 hours of the next day
+       market_mechanism: complex_clearing
+
+The first day of the simulation is then a lead day without deliveries: the first auction opens on it and the delivered days follow. Use ``assume-market <config.yaml> --case-study <case>`` to check the timing before running.
+
+**Per-market forecasts.** Forecasts can differ between markets, e.g. a day-ahead wind forecast is less accurate than an intraday one. For every ``market_id`` in ``markets_config`` the CSV loader optionally reads ``availability_<market_id>_df.csv`` (unit availabilities) and ``demand_<market_id>_df.csv`` (demand units). Their layout is identical to ``availability_df.csv`` and ``demand_df.csv``, with one column per unit. A missing file, or a missing unit column, means that the unit uses the realised series (``availability_df.csv``/``demand_df.csv``) in that market. The realised series always determine what a unit physically delivers. The naive price and residual load forecasts of each market use that market's own forecasts, so the price forecasts of two markets differ exactly by the forecast revision. See :doc:`unit_forecasts`.
+
+**How positions carry across markets.** The volume a unit has sold or bought in an earlier market is its *position*; the position is the sum of the accepted volumes of all markets for each delivery hour. A bid in a later market is measured from this position: positive volumes sell more, negative volumes buy back (reduce the position). Strategies for sequential markets therefore need to be position-aware, see :doc:`units` and :doc:`bidding_strategies`. If the forecast of the later market makes the position impossible to deliver, the unit makes a *forced correction*, see :doc:`units`. Revenue and profit are recorded for each market separately.
+
+.. note::
+   The ID auction trades only changes to the DA positions, so some hours can have little or no trading, and their prices are poorly defined. Flag hours without trades rather than reading their prices literally.
+
 Example Configuration - CRM Market
 ----------------------------------
 

@@ -44,6 +44,9 @@ Custom Units (CSV import)     ``CustomUnitForecaster``                  *(arbitr
    Shared series must not be modified in place, as the change would affect all units.
 
 .. note::
+   Power plant forecasters (``availability``) and demand forecasters (``demand``) can additionally hold one forecast per market, in ``availability_forecast`` and ``demand_forecast`` (dicts keyed by ``market_id``). ``get_availability(market_id)`` and ``get_demand(market_id)`` return the forecast of that market and fall back to the realised series if there is none. ``availability`` and ``demand`` always remain the realised series that determine physical delivery. The CSV loader fills the dicts from ``availability_<market_id>_df.csv`` and ``demand_<market_id>_df.csv``, see :ref:`sequential-markets`.
+
+.. note::
    Unit operators can also own a forecaster, :class:`~assume.common.forecaster.UnitsOperatorForecaster`,
    giving the operator its own ``price`` and ``residual_load`` forecasts (see :doc:`unit_operator`).
    It reuses the same lifecycle, algorithms, and registries described below; its algorithms can be set per

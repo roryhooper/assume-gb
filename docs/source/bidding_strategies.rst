@@ -161,6 +161,22 @@ Heuristic method API references:
 - :py:meth:`assume.strategies.flexable_storage.StorageCapacityHeuristicBalancingNegStrategy`
 - :py:meth:`assume.strategies.flexable_storage.StorageCapacityHeuristicBalancingPosStrategy`
 
+Switch-price strategy for sequential markets
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``powerplant_energy_heuristic_flexable_hourly_linked`` is a thermal power plant strategy for several energy markets that trade the same delivery hours one after another (see :ref:`sequential-markets`), cleared with ``complex_clearing`` (``pricing_mechanism: pay_as_clear``). It is implemented in :py:meth:`assume.strategies.advanced_orders.EnergyHeuristicFlexableHourlyLinkedStrategy` and reuses the start-up markup, stay-on discount, ramping and operating-history logic of ``powerplant_energy_heuristic_flexable``. In each market and for each delivery hour it first submits *correction bids* if the position from an earlier market cannot be delivered (see :doc:`units`), then:
+
+- **Off unit:** an all-or-nothing single-hour start block *S* at the min-load volume, priced at the average cost at min load plus the start-up markup, and a linked flexible bid *F* for the volume up to the available maximum, priced at the average cost of that range. The market judges *S* together with its linked *F*, so they act like one "start and run" offer. A unit still inside its minimum down time bids nothing.
+- **Running unit:** a unit that already holds a position decides for the hour between its extremes: shutting down (if allowed), min load and max load. Its profit at each extreme is a straight line in the market price, so there are *switch prices* at which the best extreme changes. The unit offers an increase *I* (sell up to the maximum) at the switch price towards max load, a decrease *D* (buy back down to min load) 0.01 EUR/MWh below it, and, if shutting down is allowed, an exit *X* (buy back the min-load volume, or the whole position) at the switch price towards zero output. Shutting down is allowed only if the minimum operating time has been served and shutting down does not create an off period shorter than the minimum down time.
+
+Using a single switch price per hour (instead of the average cost of the reduction and of the increase separately) keeps every buy price below every sell price of the same unit. Otherwise a unit with partial-load efficiency could be matched with itself and end up between zero and min load. Bids that clear fully are always profitable for the unit.
+
+Limitations:
+
+- **Hour-at-a-time decisions:** effects across hours enter only through the restart penalty and the shutdown-allowed check. A unit committed for a long run in the first market can only shut down in a later market at the end of that run, although it can always reduce to min load. Minimum up/down times are enforced at delivery, which can lead to recorded deviations between position and physical output (``energy_deviation``).
+- **Partial acceptance at the switch price:** a bid that clears only partly at exactly its switch price can lose a little, bounded by the difference between incremental cost and switch price over that volume.
+- **ID price forecast:** the naive price forecast of a later market ignores the effect of earlier commitments (start-ups already paid for, storage state of charge).
+
 Optimization
 ------------
 
