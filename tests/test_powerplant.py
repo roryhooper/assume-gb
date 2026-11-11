@@ -970,3 +970,108 @@ def test_attribution_catches_distant_start_reclassification():
     )
     final = unit.calculate_operating_cost(unit.index[0], unit.index[-1]).sum()
     assert total == pytest.approx(final)
+
+
+def _spy_operating_cost(unit):
+    calls = []
+    original = unit.calculate_operating_cost
+
+    def spy(start, end):
+        calls.append((start, end))
+        return original(start, end)
+
+    unit.calculate_operating_cost = spy
+    return calls
+
+
+def test_attribution_skips_zero_volume_orders():
+    unit = _startup_plant()
+    calls = _spy_operating_cost(unit)
+    _dispatch(unit, "DA", 3, 0)
+    assert calls == []
+    assert unit.outputs["energy_total_costs_DA"].data.sum() == 0
+    # a non-zero order is attributed
+    _dispatch(unit, "DA", 3, 100)
+    assert len(calls) == 2
+
+
+def test_attribution_window_ends_at_first_output_after_order():
+    unit = _startup_plant(index_len=48)
+    unit.outputs["energy"].at[unit.index[10]] = 500  # a later start
+    unit.outputs["energy"].at[unit.index[20]] = 500
+    calls = _spy_operating_cost(unit)
+    _dispatch(unit, "DA", 4, 500)
+    # only the start at hour 10 can be reclassified: beyond it both paths agree
+    assert calls == [(unit.index[4], unit.index[10])] * 2
+
+    # without any later output the window runs to the end of the index
+    unit = _startup_plant(index_len=48)
+    calls = _spy_operating_cost(unit)
+    _dispatch(unit, "DA", 4, 500)
+    assert calls == [(unit.index[4], unit.index[-1])] * 2
+
+
+def _full_horizon_attribution(unit, orders):
+    """Reference attribution: cost deltas evaluated over the whole index."""
+    import numpy as np
+
+    totals = {}
+    for market_id, hour, length, volume in orders:
+        first, last = unit.index[hour], unit.index[hour + length - 1]
+        before = unit.calculate_operating_cost(unit.index[0], unit.index[-1])
+        unit.outputs["energy"].loc[first:last] += volume
+        after = unit.calculate_operating_cost(unit.index[0], unit.index[-1])
+        totals.setdefault(market_id, np.zeros(len(unit.index)))
+        totals[market_id] += after - before
+    return totals
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_bounded_attribution_matches_full_horizon(seed):
+    import numpy as np
+
+    from assume.common.market_objects import MarketConfig
+
+    rng = np.random.default_rng(seed)
+    n = 36
+    unit = _startup_plant(index_len=n)
+    reference = _startup_plant(index_len=n)
+    orders = []
+    position = np.zeros(n)
+    for market_id in ("DA", "ID", "BAL"):
+        for _ in range(rng.integers(1, 8)):
+            hour = int(rng.integers(0, n - 1))
+            length = int(rng.integers(1, min(4, n - hour) + 1))
+            if rng.random() < 0.5 or position[hour : hour + length].min() <= 0:
+                volume = float(rng.choice([0, 100, 300, 500]))
+            else:
+                # reduce (possibly to zero) a held position
+                volume = -float(position[hour : hour + length].min())
+            position[hour : hour + length] += volume
+            orders.append((market_id, hour, length, volume))
+
+    for market_id, hour, length, volume in orders:
+        mc = MarketConfig(market_id=market_id, product_type="energy")
+        unit.set_dispatch_plan(
+            mc,
+            [
+                {
+                    "start_time": unit.index[hour],
+                    "end_time": unit.index[hour] + length * unit.index.freq,
+                    "accepted_volume": volume,
+                    "accepted_price": 50,
+                    "market_id": market_id,
+                }
+            ],
+        )
+    expected = _full_horizon_attribution(reference, orders)
+
+    for market_id, costs in expected.items():
+        assert unit.outputs[f"energy_total_costs_{market_id}"].data == pytest.approx(
+            costs
+        ), market_id
+    final = unit.calculate_operating_cost(unit.index[0], unit.index[-1]).sum()
+    total = sum(
+        unit.outputs[f"energy_total_costs_{m}"].data.sum() for m in expected.keys()
+    )
+    assert total == pytest.approx(final)

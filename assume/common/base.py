@@ -148,20 +148,22 @@ class BaseUnit:
             market_id = order.get("market_id")
             attribute_costs = market_id is not None and product_type == "energy"
             if attribute_costs:
+                # create the column even if this order changes nothing
+                total_costs = self.outputs[f"{product_type}_total_costs_{market_id}"]
+                attribute_costs = bool(np.any(np.asarray(added_volume) != 0))
+            if attribute_costs:
                 # cost of the position path before this order, from the first
-                # affected hour to the end of the index (a volume change can
-                # reclassify a later start-up, so the whole tail is needed)
+                # affected hour to the end of the window in which the cost can
+                # change (a volume change can reclassify a later start-up)
                 cost_start = max(start, self.index[0])
-                cost_before = self.calculate_operating_cost(cost_start, self.index[-1])
+                cost_end = self.get_cost_attribution_end(end_excl)
+                cost_before = self.calculate_operating_cost(cost_start, cost_end)
             self.outputs[product_type].loc[start:end_excl] += added_volume
             if attribute_costs:
                 cost_delta = (
-                    self.calculate_operating_cost(cost_start, self.index[-1])
-                    - cost_before
+                    self.calculate_operating_cost(cost_start, cost_end) - cost_before
                 )
-                self.outputs[f"{product_type}_total_costs_{market_id}"].loc[
-                    cost_start:
-                ] += cost_delta
+                total_costs.loc[cost_start:cost_end] += cost_delta
             if market_id is not None:
                 self.outputs[f"{product_type}_{market_id}"].loc[start:end_excl] += (
                     added_volume
@@ -175,6 +177,37 @@ class BaseUnit:
             self.outputs[f"{product_type}_accepted_price"].loc[start:end_excl] = (
                 accepted_price
             )
+
+    def get_cost_attribution_end(self, last: datetime) -> datetime:
+        """
+        Last step whose operating cost can change when the position changes up to *last*.
+
+        Used by :meth:`set_dispatch_plan` to bound the window of the per-market cost
+        attribution. A change of the position up to *last* changes the cost of these
+        steps and can reclassify the next start-up after *last* (its down time may
+        now begin earlier or later). The first step after *last* with a non-zero
+        position ends the down time counted for any later start-up, so beyond it the
+        cost of the position paths before and after the change is identical. Returns
+        that step, or the end of the index if there is none.
+
+        Args:
+            last (datetime.datetime): The last step whose position changes.
+
+        Returns:
+            datetime.datetime: The last step (inclusive) of the attribution window.
+        """
+        if last >= self.index[-1]:
+            return self.index[-1]
+        first_after = self.index.align_up(last)
+        if first_after == last:
+            first_after += self.index.freq
+        later = np.asarray(
+            self.outputs["energy"].loc[first_after : self.index[-1]], dtype=float
+        )
+        nonzero = np.flatnonzero(later != 0)
+        if len(nonzero) == 0:
+            return self.index[-1]
+        return first_after + int(nonzero[0]) * self.index.freq
 
     def calculate_operating_cost(self, start: datetime, end: datetime) -> np.ndarray:
         """
@@ -191,14 +224,16 @@ class BaseUnit:
         """
         start = max(start, self.index[0])
         power = np.asarray(self.outputs["energy"].loc[start:end], dtype=float)
-        times = self.index[start:end]
-        return np.array(
-            [
-                abs(p) * self.calculate_marginal_cost(t, p) if p != 0 else 0.0
-                for t, p in zip(times, power)
-            ],
-            dtype=float,
-        )
+        cost = np.zeros(len(power))
+        # only steps with a position cost anything
+        running = np.flatnonzero(power)
+        if len(running):
+            times = self.index[start:end]
+            for i in running:
+                cost[i] = abs(power[i]) * self.calculate_marginal_cost(
+                    times[i], power[i]
+                )
+        return cost
 
     def calculate_cashflow_and_reward(
         self,
@@ -532,6 +567,34 @@ class SupportsMinMax(BaseUnit):
         # Return positive time if operating, negative if shut down
         return -run if is_off else run
 
+    def get_downtime(self, start: datetime) -> int:
+        """
+        Down time before *start* on the current position path.
+
+        The number of consecutive zero steps of ``outputs["energy"]`` directly before
+        *start*, counted back to the beginning of the index without a cap. Steps
+        before the index are not counted, so the down time at the first step of the
+        index is 0. This is the down time with which :meth:`calculate_operating_cost`
+        classifies a start-up at *start*.
+
+        Args:
+            start (datetime.datetime): The step at which the unit would start.
+
+        Returns:
+            int: The number of consecutive zero steps before *start*.
+        """
+        start = self.index.align_up(max(start, self.index[0]))
+        if start == self.index[0]:
+            return 0
+        before = np.asarray(
+            self.outputs["energy"].loc[self.index[0] : start - self.index.freq],
+            dtype=float,
+        )
+        nonzero = np.flatnonzero(before != 0)
+        if len(nonzero) == 0:
+            return len(before)
+        return len(before) - 1 - int(nonzero[-1])
+
     def calculate_operating_cost(self, start: datetime, end: datetime) -> np.ndarray:
         """
         Running cost of the current position path plus start-up costs.
@@ -539,21 +602,24 @@ class SupportsMinMax(BaseUnit):
         A start-up is booked at every off-to-on transition of ``outputs["energy"]``
         (the hour before the index counts as off). The down time is the number of
         consecutive zero steps before the transition, counted on the series itself
-        from the beginning of the index, and is passed as ``-count`` to
-        :meth:`get_starting_costs`. Both ends are inclusive.
+        from the beginning of the index (see :meth:`get_downtime`), and is passed as
+        ``-count`` to :meth:`get_starting_costs`. Both ends are inclusive.
         """
-        start = max(start, self.index[0])
+        start = self.index.align_up(max(start, self.index[0]))
         cost = super().calculate_operating_cost(start, end)
-        power = np.asarray(self.outputs["energy"].loc[self.index[0] : end], dtype=float)
-        offset = len(power) - len(cost)
-        zeros = 0
-        for i, p in enumerate(power):
-            if p == 0:
-                zeros += 1
-                continue
-            if p > 0 and (i == 0 or power[i - 1] == 0) and i >= offset:
-                cost[i - offset] += self.get_starting_costs(-zeros)
-            zeros = 0
+        power = np.asarray(self.outputs["energy"].loc[start:end], dtype=float)
+        if len(power) == 0:
+            return cost
+        downtime_before = self.get_downtime(start)
+        previous_off = np.empty(len(power), dtype=bool)
+        previous_off[0] = start == self.index[0] or downtime_before > 0
+        previous_off[1:] = power[:-1] == 0
+        nonzero = np.flatnonzero(power != 0)
+        for i in np.flatnonzero((power > 0) & previous_off):
+            # down time: zero steps since the last non-zero step before i
+            k = np.searchsorted(nonzero, i)
+            downtime = i - nonzero[k - 1] - 1 if k > 0 else downtime_before + i
+            cost[i] += self.get_starting_costs(-int(downtime))
         return cost
 
     def get_starting_costs(self, op_time: int) -> float:
